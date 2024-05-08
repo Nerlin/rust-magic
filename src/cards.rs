@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::abilities::{Abilities, Cost, ManaAbility};
+use crate::abilities::{Abilities, Activate, Cost};
+use crate::effects::ManaEffect;
 use crate::mana::{Color, Mana};
 use crate::player::Player;
 use crate::zones::Zone;
@@ -29,11 +30,11 @@ pub struct Permanent {
 }
 
 impl Permanent {
-    fn new() -> Permanent {
+    pub fn new() -> Permanent {
         Permanent { tapped: false }
     }
 
-    fn tap(&mut self) -> bool {
+    pub fn tap(&mut self) -> bool {
         return if !self.tapped {
             self.tapped = true;
             true
@@ -42,7 +43,7 @@ impl Permanent {
         };
     }
 
-    fn untap(&mut self) -> bool {
+    pub fn untap(&mut self) -> bool {
         return if self.tapped {
             self.tapped = false;
             true
@@ -86,11 +87,8 @@ impl Land {
         };
 
         let tap = Tap { target: land.permanent.clone() };
-        let mana_ability = Box::new(ManaAbility {
-            player: owner.clone(),
-            mana,
-            cost: Box::new(tap),
-        });
+        let effect = ManaEffect { player: owner, mana };
+        let mana_ability = Activate { cost: Box::new(tap), effect: Rc::new(effect) };
 
         land.abilities.activated.push(mana_ability);
         land

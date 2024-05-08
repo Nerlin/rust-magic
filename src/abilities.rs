@@ -1,7 +1,6 @@
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::effects::{Effect, EffectKind};
+use crate::effects::Effect;
 use crate::mana::Mana;
 use crate::player::Player;
 
@@ -35,15 +34,24 @@ impl Cost for ManaCost {
     }
 }
 
-pub trait Activate {
-    fn cost(&self) -> &Box<dyn Cost>;
+pub struct Activate {
+    pub cost: Box<dyn Cost>,
+    pub effect: Rc<dyn Effect>
+}
 
-    // Returns true if ability was activated successfully
-    fn activate(&mut self) -> Option<Effect>;
+impl Activate {
+    pub fn activate(&mut self) -> Option<Rc<dyn Effect>> {
+        let paid = self.cost.pay();
+        if paid {
+            Some(self.effect.clone())
+        } else {
+            None
+        }
+    }
 }
 
 pub struct Abilities {
-    pub activated: Vec<Box<dyn Activate>>,
+    pub activated: Vec<Activate>,
 }
 
 impl Abilities {
@@ -54,49 +62,12 @@ impl Abilities {
     }
 }
 
-
-pub struct ManaAbility {
-    pub player: Rc<RefCell<Player>>,
-    pub mana: Mana,
-    pub cost: Box<dyn Cost>,
-}
-
-impl Activate for ManaAbility {
-    fn cost(&self) -> &Box<dyn Cost> {
-        &self.cost
-    }
-
-    fn activate(&mut self) -> Option<Effect> {
-        let paid = self.cost.pay();
-        if !paid {
-            return None;
-        }
-
-        let player_rc = self.player.clone();
-        let mana = self.mana.clone();
-
-        Some(Effect {
-            kind: EffectKind::Immediate,
-            target: None,
-            resolver: Box::new(move || {
-                let mut player = player_rc.borrow_mut();
-
-                for (color, amount) in &mana {
-                    let player_amount = player.mana.get(color).unwrap_or(&0).clone();
-                    player.mana.insert(color.clone(), player_amount + amount);
-                }
-            }),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
 
-    use crate::abilities::Activate;
     use crate::cards::Land;
     use crate::mana::{CMC, Color};
     use crate::player::Player;
@@ -105,12 +76,37 @@ mod tests {
     fn test_basic_land() {
         let player = Rc::new(RefCell::new(Player::new()));
         let mut forest = Land::basic("Forest", player.clone(), CMC::new("G").to_mana());
-        let mana_ability: &mut Box<dyn Activate> = forest.abilities.activated.get_mut(0).unwrap();
-        let effect = &mana_ability.activate().unwrap();
+        let mana_ability = forest.abilities.activated.get_mut(0).unwrap();
+        let effect = mana_ability.activate().unwrap();
         effect.resolve();
 
         assert_eq!(player.borrow_mut().mana, HashMap::from([
             (Color::Green, 1)
+        ]));
+    }
+
+    #[test]
+    fn test_basic_land_tapped() {
+        let player = Rc::new(RefCell::new(Player::new()));
+        let mut mountain = Land::basic("Mountain", player.clone(), CMC::new("R").to_mana());
+        mountain.permanent.borrow_mut().tap();
+
+        let mana_ability = mountain.abilities.activated.get_mut(0).unwrap();
+        let effect = mana_ability.activate();
+        assert!(effect.is_none())
+    }
+
+    #[test]
+    fn test_basic_land_untapped() {
+        let player = Rc::new(RefCell::new(Player::new()));
+        let mut island = Land::basic("Island", player.clone(), CMC::new("U").to_mana());
+        let mana_ability = island.abilities.activated.get_mut(0).unwrap();
+        mana_ability.activate().unwrap().resolve();
+        island.permanent.borrow_mut().untap();
+
+        mana_ability.activate().unwrap().resolve();
+        assert_eq!(player.borrow_mut().mana, HashMap::from([
+            (Color::Blue, 2)
         ]));
     }
 }
