@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
 use crate::cards::Card;
 use crate::mana::Mana;
 use crate::player::Player;
@@ -23,7 +21,7 @@ pub enum Target {
 }
 
 pub struct ManaEffect {
-    pub player: Rc<RefCell<Player>>,
+    pub player: Player,
     pub mana: Mana,
 }
 

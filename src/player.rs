@@ -1,13 +1,24 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::mana::Mana;
 
-pub struct Player {
-    pub life: u16,
+pub type Player = Rc<RefCell<PlayerState>>;
+
+pub fn new_player() -> Player {
+    Rc::new(RefCell::new(PlayerState::new()))
+}
+
+pub struct PlayerState {
+    pub life: Life,
     pub mana: Mana
 }
 
-impl Player {
-    pub fn new() -> Player {
-        Player {
+pub type Life = u16;
+
+impl PlayerState {
+    pub fn new() -> PlayerState {
+        PlayerState {
             life: 20,
             mana: Mana::new()
         }

@@ -10,7 +10,7 @@ pub enum Color {
     Blue,
     Black,
     Red,
-    Green
+    Green,
 }
 
 const COLOR_CODES: phf::Map<char, Color> = phf_map! {
