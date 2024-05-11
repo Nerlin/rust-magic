@@ -1,12 +1,11 @@
-
-
+use crate::cards::Permanent;
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Zone {
     None,
     Hand,
     Library,
-    Battlefield,
+    Battlefield(Permanent),
     Graveyard,
     Stack,
     Exile,

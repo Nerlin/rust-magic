@@ -2,17 +2,20 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::abilities::Cost;
-use crate::cards::Permanent;
+use crate::cards::CardState;
 use crate::mana::Mana;
 use crate::player::{Life, Player};
+use crate::zones::Zone;
 
 pub struct Tap {
-    pub target: Rc<RefCell<Permanent>>,
 }
 
 impl Cost for Tap {
-    fn pay(&mut self) -> bool {
-        self.target.borrow_mut().tap()
+    fn pay(&self, card_state: Rc<RefCell<CardState>>) -> bool {
+        if let Zone::Battlefield(permanent) = &mut card_state.borrow_mut().zone {
+            return permanent.tap();
+        }
+        false
     }
 }
 
@@ -22,7 +25,7 @@ pub struct ManaCost {
 }
 
 impl Cost for ManaCost {
-    fn pay(&mut self) -> bool {
+    fn pay(&self, _card_state: Rc<RefCell<CardState>>) -> bool {
         let mut player = self.player.borrow_mut();
         for (color, amount) in &self.cost {
             match player.mana.get(color) {
@@ -49,7 +52,7 @@ pub struct LifeCost {
 }
 
 impl Cost for LifeCost {
-    fn pay(&mut self) -> bool {
+    fn pay(&self, _card_state: Rc<RefCell<CardState>>) -> bool {
         let mut player = self.player.borrow_mut();
         if player.life >= self.cost {
             player.life = player.life - self.cost;
@@ -64,9 +67,9 @@ pub struct MultiCost {
 }
 
 impl Cost for MultiCost {
-    fn pay(&mut self) -> bool {
-        for cost in self.items.iter_mut() {
-            let paid = cost.pay();
+    fn pay(&self, card_state: Rc<RefCell<CardState>>) -> bool {
+        for cost in self.items.iter() {
+            let paid = cost.pay(card_state.clone());
             if !paid {
                 return false;
             }

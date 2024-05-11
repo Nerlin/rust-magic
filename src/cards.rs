@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use crate::abilities::{Abilities, Activate};
 use crate::cost::Tap;
-use crate::effects::ManaEffect;
+use crate::effects::{Effect, ManaEffect};
 use crate::mana::{Color, Mana};
 use crate::player::Player;
 use crate::zones::Zone;
@@ -15,19 +15,62 @@ pub struct Card {
     pub cost: Mana,
     pub flavor: Option<String>,
     pub color: HashSet<Color>,
-    pub zone: Zone,
     pub abilities: Abilities,
+    pub state: Rc<RefCell<CardState>>,
+}
+
+impl Card {
+    pub fn basic_land(name: &str, owner: Player, mana: Mana) -> Card {
+        let mut land = Card {
+            name: String::from(name),
+            class: CardType::Land,
+            flavor: None,
+            cost: Mana::new(),
+            color: HashSet::from([Color::Colorless]),
+            abilities: Abilities::new(),
+            state: Rc::new(RefCell::new(CardState { zone: Zone::None })),
+        };
+        let tap = Tap {};
+        let effect = ManaEffect { player: owner, mana };
+        let mana_ability = Activate { cost: Box::new(tap), effect: Rc::new(effect) };
+
+        land.abilities.activated.push(mana_ability);
+        land
+    }
+
+    pub fn activate(&self, index: usize) -> Option<Rc<dyn Effect>> {
+        if let Some(ability) = self.abilities.activated.get(index) {
+            ability.activate(self.state.clone())
+        } else {
+            None
+        }
+    }
+}
+
+pub struct CardState {
+    pub zone: Zone,
+}
+
+impl CardState {
+    pub fn as_permanent(&mut self) -> Option<&mut Permanent> {
+        return if let Zone::Battlefield(ref mut permanent) = &mut self.zone {
+            Some(permanent)
+        } else {
+            None
+        }
+    }
 }
 
 pub enum CardType {
     Land,
-    Creature,
+    Creature(Creature),
     Sorcery,
     Instant,
     Enchantment,
     Artifact,
 }
 
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Permanent {
     pub tapped: bool,
 }
@@ -56,45 +99,32 @@ impl Permanent {
     }
 }
 
-pub struct Land {
-    pub card: Card,
-    pub permanent: Rc<RefCell<Permanent>>,
-}
-
-impl Land {
-    pub fn basic(name: &str, owner: Player, mana: Mana) -> Land {
-        let mut land = Land {
-            card: Card {
-                name: String::from(name),
-                class: CardType::Land,
-                flavor: None,
-                cost: Mana::new(),
-
-                // Lands are colorless
-                color: HashSet::from([Color::Colorless]),
-                abilities: Abilities::new(),
-                zone: Zone::None,
-            },
-            permanent: Rc::new(RefCell::new(Permanent::new())),
-
-        };
-
-        let tap = Tap { target: land.permanent.clone() };
-        let effect = ManaEffect { player: owner, mana };
-        let mana_ability = Activate { cost: Box::new(tap), effect: Rc::new(effect) };
-
-        land.card.abilities.activated.push(mana_ability);
-        land
-    }
-}
-
 pub struct Creature {
-    pub card: Card,
-    pub permanent: Rc<RefCell<Permanent>>,
+    pub power: i16,
+    pub toughness: i16,
+    pub state: Rc<RefCell<CreatureState>>,
+}
+
+pub struct CreatureState {
     pub power: i16,
     pub toughness: i16,
 }
 
+impl Creature {
+    pub fn new(power: i16, toughness: i16) -> Creature {
+        Creature {
+            power,
+            toughness,
+            state: Rc::new(RefCell::new(CreatureState { power, toughness }))
+        }
+    }
+
+    pub fn reset(&mut self) {
+        let mut state = self.state.borrow_mut();
+        state.power = self.power;
+        state.toughness = self.toughness;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -103,7 +133,7 @@ mod tests {
     use std::rc::Rc;
 
     use crate::abilities::{Abilities, Activate};
-    use crate::cards::{Card, CardType, Creature, Land, Permanent};
+    use crate::cards::{Card, CardState, CardType, Creature, Permanent};
     use crate::cost::{LifeCost, MultiCost, Tap};
     use crate::effects::ManaEffect;
     use crate::mana::{CMC, Color, Mana};
@@ -113,9 +143,10 @@ mod tests {
     #[test]
     fn test_basic_land() {
         let player = new_player();
-        let mut forest = Land::basic("Forest", player.clone(), CMC::new("G").to_mana());
-        let mana_ability = forest.card.abilities.activated.get_mut(0).unwrap();
-        let effect = mana_ability.activate().unwrap();
+        let forest = Card::basic_land("Forest", player.clone(), CMC::new("G").to_mana());
+        forest.state.borrow_mut().zone = Zone::Battlefield(Permanent::new());
+
+        let effect = forest.activate(0).unwrap();
         effect.resolve();
 
         assert_eq!(player.borrow_mut().mana, Mana::from([
@@ -126,24 +157,29 @@ mod tests {
     #[test]
     fn test_basic_land_tapped() {
         let player = new_player();
-        let mut mountain = Land::basic("Mountain", player.clone(), CMC::new("R").to_mana());
-        mountain.permanent.borrow_mut().tap();
+        let mut mountain =  Card::basic_land("Mountain", player.clone(), CMC::new("R").to_mana());
+        let mut permanent = Permanent::new();
+        permanent.tap();
 
-        let mana_ability = mountain.card.abilities.activated.get_mut(0).unwrap();
-        let effect = mana_ability.activate();
+        mountain.state.borrow_mut().zone = Zone::Battlefield(permanent);
+
+        let mana_ability = mountain.abilities.activated.get_mut(0).unwrap();
+        let effect = mana_ability.activate(mountain.state.clone());
         assert!(effect.is_none())
     }
 
     #[test]
     fn test_basic_land_untapped() {
         let player = new_player();
-        let mut island = Land::basic("Island", player.clone(), CMC::new("U").to_mana());
+        let mut island = Card::basic_land("Island", player.clone(), CMC::new("U").to_mana());
+        island.state.borrow_mut().zone = Zone::Battlefield(Permanent::new());
 
-        let mana_ability = island.card.abilities.activated.get_mut(0).unwrap();
-        mana_ability.activate().unwrap().resolve();
-        island.permanent.borrow_mut().untap();
+        let mana_ability = island.abilities.activated.get_mut(0).unwrap();
+        mana_ability.activate(island.state.clone()).unwrap().resolve();
 
-        mana_ability.activate().unwrap().resolve();
+        island.state.borrow_mut().as_permanent().unwrap().untap();
+
+        mana_ability.activate(island.state.clone()).unwrap().resolve();
         assert_eq!(player.borrow_mut().mana, Mana::from([
             (Color::Blue, 2)
         ]));
@@ -152,10 +188,10 @@ mod tests {
     #[test]
     fn test_blightsoil_druid() {
         let player = new_player();
-        let mut creature = create_blightsoil_druid(player.clone());
 
-        let mana_ability = creature.card.abilities.activated.get_mut(0).unwrap();
-        let effect = mana_ability.activate().unwrap();
+        let mut creature = create_blightsoil_druid(player.clone());
+        let mana_ability = creature.abilities.activated.get_mut(0).unwrap();
+        let effect = mana_ability.activate(creature.state.clone()).unwrap();
         effect.resolve();
 
         assert_eq!(
@@ -169,10 +205,9 @@ mod tests {
         let player = new_player();
         player.borrow_mut().life = 0;
 
-        let mut creature = create_blightsoil_druid(player.clone());
-
-        let mana_ability = creature.card.abilities.activated.get_mut(0).unwrap();
-        let effect = mana_ability.activate();
+        let creature = create_blightsoil_druid(player.clone());
+        let mana_ability = creature.abilities.activated.get(0).unwrap();
+        let effect = mana_ability.activate(creature.state.clone());
 
         assert!(effect.is_none());
     }
@@ -182,37 +217,46 @@ mod tests {
         let player = new_player();
 
         let mut creature = create_blightsoil_druid(player.clone());
-        creature.permanent.borrow_mut().tap();
+        creature.state.borrow_mut().as_permanent().unwrap().tap();
 
-        let mana_ability = creature.card.abilities.activated.get_mut(0).unwrap();
-        let effect = mana_ability.activate();
+        let mana_ability = creature.abilities.activated.get_mut(0).unwrap();
+        let effect = mana_ability.activate(creature.state.clone());
 
         assert!(effect.is_none());
     }
 
-    fn create_blightsoil_druid(player: Player) -> Creature {
-        let mut creature = Creature {
-            card: Card {
-                name: String::from("Blood Celebrant"),
-                class: CardType::Creature,
-                cost: CMC::new("B").to_mana(),
-                zone: Zone::Battlefield,
-                color: HashSet::from([Color::Black]),
-                flavor: None,
-                abilities: Abilities::new(),
-            },
-            permanent: Rc::new(RefCell::new(Permanent::new())),
-            power: 1,
-            toughness: 1,
+    #[test]
+    fn test_creature_reset() {
+        let player = new_player();
+        let mut card = create_blightsoil_druid(player.clone());
+        if let CardType::Creature(creature) = &mut card.class {
+            creature.state.borrow_mut().power = 0;
+            creature.state.borrow_mut().toughness = 0;
+            creature.reset();
+
+            assert_eq!(creature.state.borrow().power, creature.power);
+            assert_eq!(creature.state.borrow().toughness, creature.toughness);
+        }
+    }
+
+    fn create_blightsoil_druid(player: Player) -> Card {
+        let mut creature = Card {
+            name: String::from("Blood Celebrant"),
+            class: CardType::Creature(Creature::new(1, 1)),
+            cost: CMC::new("B").to_mana(),
+            color: HashSet::from([Color::Black]),
+            flavor: None,
+            abilities: Abilities::new(),
+            state: Rc::new(RefCell::new(CardState { zone: Zone::Battlefield(Permanent::new()) }))
         };
 
-        let tap = Tap { target: creature.permanent.clone() };
+        let tap = Tap {};
         let life_cost = LifeCost { player: player.clone(), cost: 1 };
         let cost = MultiCost { items: vec![Box::new(tap), Box::new(life_cost)] };
         let effect = ManaEffect { player: player.clone(), mana: Mana::from([(Color::Green, 1)]) };
         let mana_ability = Activate { cost: Box::new(cost), effect: Rc::new(effect) };
 
-        creature.card.abilities.activated.push(mana_ability);
+        creature.abilities.activated.push(mana_ability);
         creature
     }
 }
