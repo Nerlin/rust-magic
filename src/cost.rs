@@ -4,18 +4,14 @@ use std::rc::Rc;
 use crate::abilities::Cost;
 use crate::cards::CardState;
 use crate::mana::Mana;
-use crate::player::{Life, Player};
-use crate::zones::Zone;
+use crate::player::Player;
 
 pub struct Tap {
 }
 
 impl Cost for Tap {
     fn pay(&self, card_state: Rc<RefCell<CardState>>) -> bool {
-        if let Zone::Battlefield(permanent) = &mut card_state.borrow_mut().zone {
-            return permanent.tap();
-        }
-        false
+        card_state.borrow_mut().tap()
     }
 }
 
@@ -48,7 +44,7 @@ impl Cost for ManaCost {
 
 pub struct LifeCost {
     pub player: Player,
-    pub cost: Life
+    pub cost: u16
 }
 
 impl Cost for LifeCost {

@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::cards::CardState;
 use crate::effects::Effect;
-use crate::events::Event;
+use crate::events::{Event, EventHandler, EventResult, Stack};
 
 pub trait Cost {
     // Returns true if the cost is paid.
@@ -12,7 +12,7 @@ pub trait Cost {
 
 pub struct Activate {
     pub cost: Box<dyn Cost>,
-    pub effect: Rc<dyn Effect>
+    pub effect: Rc<dyn Effect>,
 }
 
 impl Activate {
@@ -28,18 +28,36 @@ impl Activate {
 
 pub struct Trigger {
     pub event: Event,
-    pub effect: Rc<dyn Effect>
+    pub effect: Rc<dyn Effect>,
+    stack: Rc<RefCell<Stack>>,
 }
 
 impl Trigger {
-    pub fn trigger(&self) -> Rc<dyn Effect> {
-        self.effect.clone()
+    pub fn new(event: Event, effect: Rc<dyn Effect>, stack: Rc<RefCell<Stack>>) -> Trigger {
+        let trigger = Trigger {
+            event,
+            effect,
+            stack,
+        };
+        trigger
+    }
+
+    pub fn trigger(&self) {
+        let effect = self.effect.clone();
+        self.stack.borrow_mut().push(effect);
+    }
+}
+
+impl EventHandler for Trigger {
+    fn handle(&self, _event: &Event) -> EventResult {
+        self.trigger();
+        EventResult::Resolved
     }
 }
 
 pub struct Abilities {
     pub activated: Vec<Activate>,
-    pub triggers: Vec<Trigger>,
+    pub triggers: Vec<Rc<Trigger>>,
 }
 
 impl Abilities {
