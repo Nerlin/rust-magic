@@ -31,9 +31,9 @@ impl Effect for ManaEffect {
 
     fn resolve(&self) {
         let mut player = self.player.borrow_mut();
-        for (color, amount) in &self.mana {
-            let player_amount = player.mana.get(color).unwrap_or(&0).clone();
-            player.mana.insert(color.clone(), player_amount + amount);
+        for (color, amount) in &self.mana.iter() {
+            let player_amount = player.mana.get(color);
+            player.mana.set(color, player_amount + amount);
         }
     }
 }

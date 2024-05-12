@@ -230,7 +230,7 @@ mod tests {
     use crate::effects::{DamageEffect, ManaEffect};
     use crate::events::Event;
     use crate::game::{Game, GameObject, GameState, new_game};
-    use crate::mana::{CMC, Color, Mana};
+    use crate::mana::{Color, Mana};
     use crate::player::{new_player, Player, PlayerState};
     use crate::zones::Zone;
 
@@ -241,7 +241,7 @@ mod tests {
         let forest = Card::basic_land(
             "Forest",
             player.clone(),
-            CMC::new("G").to_mana(),
+            Mana::from("G"),
             game.borrow().events()
         );
         forest.state.borrow_mut().zone = Zone::Battlefield;
@@ -259,7 +259,7 @@ mod tests {
         let mountain = Card::basic_land(
             "Mountain",
             player.clone(),
-            CMC::new("R").to_mana(),
+            Mana::from("R"),
             game.borrow().events()
         );
 
@@ -278,7 +278,7 @@ mod tests {
         let island = Card::basic_land(
             "Island",
             player.clone(),
-            CMC::new("U").to_mana(),
+            Mana::from("U"),
             game.borrow().events()
         );
         island.state.borrow_mut().zone = Zone::Battlefield;
@@ -374,7 +374,7 @@ mod tests {
         let mut creature = Card {
             name: String::from("Blood Celebrant"),
             class: CardType::Creature(Rc::new(RefCell::new(CreatureState::new(1, 1)))),
-            cost: CMC::new("B").to_mana(),
+            cost: Mana::from("B"),
             color: HashSet::from([Color::Black]),
             flavor: String::new(),
             state: new_card_state(game.borrow().events.clone()),

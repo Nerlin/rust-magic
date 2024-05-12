@@ -23,19 +23,13 @@ pub struct ManaCost {
 impl Cost for ManaCost {
     fn pay(&self, _card_state: Rc<RefCell<CardState>>) -> bool {
         let mut player = self.player.borrow_mut();
-        for (color, amount) in &self.cost {
-            match player.mana.get(color) {
-                Some(player_amount) => {
-                    if player_amount >= amount {
-                        let player_amount = player_amount.clone();
-                        player.mana.insert(color.clone(), player_amount - amount);
-                    } else {
-                        return false;
-                    }
-                }
-                None => {
-                    return false;
-                }
+        for (color, amount) in &self.cost.iter() {
+            let player_amount = player.mana.get(color);
+            if player_amount >= *amount {
+                let player_amount = player_amount.clone();
+                player.mana.set(color, player_amount - amount);
+            } else {
+                return false;
             }
         }
         true
