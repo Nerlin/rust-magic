@@ -152,20 +152,18 @@ fn pay_cost(game: &mut Game, action: &Action) -> bool {
         }
         Choice::Tap(target) => {
             if let Some(card) = game.get_card(*target) {
-                if let Zone::Battlefield(state) = &mut card.zone {
-                    let tapped = state.tap();
-                    if tapped {
-                        dispatch_event(
-                            game,
-                            Event::Tap(CardEvent {
-                                owner: action.player_id,
-                                source: action.card_id,
-                                card: *target,
-                            }),
-                        );
-                    }
-                    return tapped;
+                let tapped = card.tap();
+                if tapped {
+                    dispatch_event(
+                        game,
+                        Event::Tap(CardEvent {
+                            owner: action.player_id,
+                            source: action.card_id,
+                            card: *target,
+                        }),
+                    );
                 }
+                return tapped;
             }
             false
         }
@@ -176,7 +174,7 @@ fn pay_cost(game: &mut Game, action: &Action) -> bool {
 pub fn dispatch_event(game: &mut Game, event: Event) {
     // TODO: First iterate through the active player cards
     for card in game.cards.values() {
-        if let Zone::Battlefield(_) = card.zone {
+        if card.zone == Zone::Battlefield {
             for trigger in card.abilities.triggers.iter() {
                 if event.meets(&trigger.condition) {
                     let mut action = Action::new(card.owner_id, card.id);
@@ -231,11 +229,9 @@ fn resolve_stack_effect(game: &mut Game, entry: StackEntry) {
 #[cfg(test)]
 mod tests {
     use crate::{
-        abilities::{
-            Abilities, ActivatedAbility, Condition, Cost, Effect, Target, TriggeredAbility,
-        },
+        abilities::{ActivatedAbility, Condition, Cost, Effect, Target, TriggeredAbility},
         action::Choice,
-        card::{BattlefieldState, Card, CardType, Zone},
+        card::{Card, CardType, Zone},
         game::{create_ability_action, resolve_stack, Game},
         mana::Mana,
     };
@@ -247,22 +243,16 @@ mod tests {
         let mut game = Game::new();
         let player_id = game.add_player(Player::new());
 
-        let card = Card {
-            id: 0,
-            owner_id: player_id,
-            name: String::from("Forest"),
-            kind: CardType::Land,
-            cost: Mana::new(),
-            zone: Zone::Battlefield(BattlefieldState::new()),
-            abilities: Abilities {
-                activated: vec![ActivatedAbility {
-                    cost: Cost::Tap(Target::Source),
-                    effect: Effect::Mana(Mana::from("G")),
-                    target: Target::None,
-                }],
-                triggers: vec![],
-            },
-        };
+        let mut card = Card::default();
+        card.name = String::from("Forest");
+        card.kind = CardType::Land;
+        card.owner_id = player_id;
+        card.zone = Zone::Battlefield;
+        card.abilities.activated.push(ActivatedAbility {
+            cost: Cost::Tap(Target::Source),
+            effect: Effect::Mana(Mana::from("G")),
+            target: Target::None,
+        });
         let card_id = game.add_card(card);
 
         let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();
@@ -274,38 +264,34 @@ mod tests {
         assert_eq!(player.mana.green, 1);
 
         let card = game.get_card(card_id).unwrap();
-        let battlefield_state = if let Zone::Battlefield(battlefield_state) = &card.zone {
-            battlefield_state
-        } else {
-            unreachable!();
-        };
-        assert!(battlefield_state.tapped);
+        assert!(card.tapped);
     }
 
     #[test]
     fn test_city_of_brass() {
         let mut game = Game::new();
         let player_id = game.add_player(Player::new());
-        let card_id = game.add_card(Card {
-            id: 0,
-            owner_id: player_id,
-            name: String::from("City of Brass"),
-            kind: CardType::Land,
-            cost: Mana::new(),
-            zone: Zone::Battlefield(BattlefieldState::new()),
-            abilities: Abilities {
-                activated: vec![ActivatedAbility {
-                    cost: Cost::Tap(Target::Source),
-                    effect: Effect::Mana(Mana::from("*")),
-                    target: Target::None,
-                }],
-                triggers: vec![TriggeredAbility {
-                    condition: Condition::Tap(Target::Source),
-                    effect: Effect::Damage(1),
-                    target: Target::Owner,
-                }],
-            },
+
+        let mut card = Card::default();
+        card.name = String::from("City of Brass");
+        card.kind = CardType::Land;
+        card.zone = Zone::Battlefield;
+        card.owner_id = player_id;
+        card.abilities.activated.push({
+            ActivatedAbility {
+                cost: Cost::Tap(Target::Source),
+                effect: Effect::Mana(Mana::from("*")),
+                target: Target::None,
+            }
         });
+        card.abilities.triggers.push({
+            TriggeredAbility {
+                condition: Condition::Tap(Target::Source),
+                effect: Effect::Damage(1),
+                target: Target::Owner,
+            }
+        });
+        let card_id = game.add_card(card);
 
         let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();
         action.choices.cost = Choice::Tap(card_id);
@@ -328,22 +314,15 @@ mod tests {
         let player_id = game.add_player(player);
         let opponent_id = game.add_player(Player::new());
 
-        let card = Card {
-            id: 0,
-            owner_id: player_id,
-            name: String::from("Test Artifact"),
-            kind: CardType::Artifact,
-            cost: Mana::new(),
-            zone: Zone::Battlefield(BattlefieldState::new()),
-            abilities: Abilities {
-                activated: vec![ActivatedAbility {
-                    cost: Cost::Mana(Mana::from("R")),
-                    effect: Effect::Damage(1),
-                    target: Target::Player,
-                }],
-                triggers: vec![],
-            },
-        };
+        let mut card = Card::default();
+        card.kind = CardType::Artifact;
+        card.zone = Zone::Battlefield;
+        card.owner_id = player_id;
+        card.abilities.activated.push(ActivatedAbility {
+            cost: Cost::Mana(Mana::from("R")),
+            effect: Effect::Damage(1),
+            target: Target::Player,
+        });
         let card_id = game.add_card(card);
 
         let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();

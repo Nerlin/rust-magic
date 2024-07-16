@@ -24,7 +24,7 @@ const COLOR_CODES: phf::Map<char, Color> = phf_map! {
     '*' => Color::Any,
 };
 
-#[derive(Debug, Clone, Copy, Hash, PartialOrd, PartialEq, Ord, Eq)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialOrd, PartialEq, Ord, Eq)]
 pub struct Mana {
     pub red: u8,
     pub white: u8,

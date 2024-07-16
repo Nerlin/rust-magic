@@ -1,5 +1,6 @@
 use crate::mana::Mana;
 
+#[derive(Default)]
 pub struct Abilities {
     pub activated: Vec<ActivatedAbility>,
     pub triggers: Vec<TriggeredAbility>,
