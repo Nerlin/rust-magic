@@ -21,6 +21,7 @@ const COLOR_CODES: phf::Map<char, Color> = phf_map! {
     'B' => Color::Black,
     'G' => Color::Green,
     'C' => Color::Colorless,
+    '*' => Color::Any,
 };
 
 #[derive(Debug, Clone, Copy, Hash, PartialOrd, PartialEq, Ord, Eq)]
@@ -165,14 +166,12 @@ impl<const N: usize> From<[(Color, u8); N]> for Mana {
 
 impl From<&str> for Mana {
     fn from(value: &str) -> Self {
-        let cmc_regex = Regex::new(r"(?<colorless>\d*)(?<any>[*]*)(?<colored>[WUBRG]*)").unwrap();
+        let cmc_regex = Regex::new(r"(?<colorless>\d*)(?<colored>[WUBRG*]*)").unwrap();
         match cmc_regex.captures(value) {
             Some(matched) => {
-                let (_, [colorless, any, colored]) = matched.extract();
+                let (_, [colorless, colored]) = matched.extract();
 
                 let mut mana = Mana::new();
-                mana.any = any.len() as u8;
-
                 if let Ok(colorless_amount) = colorless.parse::<u8>() {
                     mana.set(&Color::Colorless, colorless_amount);
                 }
