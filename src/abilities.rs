@@ -1,4 +1,4 @@
-use crate::mana::Mana;
+use crate::{mana::Mana, turn::Phase};
 
 #[derive(Default)]
 pub struct Abilities {
@@ -32,6 +32,7 @@ pub enum Effect {
     None,
     Mana(Mana),
     Damage(u16),
+    Discard(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
@@ -39,6 +40,7 @@ pub enum Condition {
     Tap(Target),
     Untap(Target),
     Draw,
+    Phase(Phase),
 }
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]

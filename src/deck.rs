@@ -1,3 +1,4 @@
+use indexmap::IndexSet;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
@@ -14,8 +15,8 @@ pub fn draw_card(game: &mut Game, player_id: ObjectId) -> Option<ObjectId> {
         return None;
     };
 
-    let card_id = if let Some(card_id) = player.deck.pop() {
-        player.hand.push(card_id);
+    let card_id = if let Some(card_id) = player.library.pop() {
+        player.hand.insert(card_id);
         card_id
     } else {
         game.status = GameStatus::Lose(player_id);
@@ -42,7 +43,7 @@ pub fn draw_card(game: &mut Game, player_id: ObjectId) -> Option<ObjectId> {
 
 pub fn put_on_deck_top(game: &mut Game, card_id: ObjectId, player_id: ObjectId) {
     if let Some(player) = game.get_player(player_id) {
-        player.deck.push(card_id);
+        player.library.insert(card_id)
     } else {
         return;
     };
@@ -56,7 +57,7 @@ pub fn put_on_deck_top(game: &mut Game, card_id: ObjectId, player_id: ObjectId) 
 
 pub fn put_on_deck_bottom(game: &mut Game, card_id: ObjectId, player_id: ObjectId) {
     if let Some(player) = game.get_player(player_id) {
-        player.deck.insert(0, card_id);
+        player.library.shift_insert(0, card_id)
     } else {
         return;
     };
@@ -70,7 +71,13 @@ pub fn put_on_deck_bottom(game: &mut Game, card_id: ObjectId, player_id: ObjectI
 
 pub fn shuffle_deck(game: &mut Game, player_id: ObjectId) {
     if let Some(player) = game.get_player(player_id) {
-        player.deck.shuffle(&mut thread_rng());
+        let mut library: Vec<ObjectId> = player.library.clone().into_iter().collect();
+        library.shuffle(&mut thread_rng());
+
+        player.library = IndexSet::new();
+        for card_id in library {
+            player.library.insert(card_id);
+        }
     }
 }
 
@@ -101,9 +108,10 @@ mod tests {
         put_on_deck_top(&mut game, forest_id, player_id);
         put_on_deck_top(&mut game, mountain_id, player_id);
 
-        let player = game.get_player(player_id).unwrap();
-        assert_eq!(player.deck[0], forest_id);
-        assert_eq!(player.deck[1], mountain_id);
+        let top = draw_card(&mut game, player_id);
+        let bottom = draw_card(&mut game, player_id);
+        assert_eq!(top, Some(mountain_id));
+        assert_eq!(bottom, Some(forest_id));
     }
 
     #[test]
@@ -125,9 +133,10 @@ mod tests {
         put_on_deck_bottom(&mut game, forest_id, player_id);
         put_on_deck_bottom(&mut game, mountain_id, player_id);
 
-        let player = game.get_player(player_id).unwrap();
-        assert_eq!(player.deck[0], mountain_id);
-        assert_eq!(player.deck[1], forest_id);
+        let top = draw_card(&mut game, player_id);
+        let bottom = draw_card(&mut game, player_id);
+        assert_eq!(top, Some(forest_id));
+        assert_eq!(bottom, Some(mountain_id));
     }
 
     #[test]

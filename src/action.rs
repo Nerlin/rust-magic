@@ -1,6 +1,7 @@
 use crate::{
     abilities::{Cost, Effect, Target},
-    game::ObjectId,
+    card::tap_card,
+    game::{Game, ObjectId},
     mana::Mana,
 };
 
@@ -8,7 +9,7 @@ use crate::{
 pub struct Action {
     pub player_id: ObjectId,
     pub card_id: ObjectId,
-    required: Required,
+    pub(crate) required: Required,
     pub choices: Choices,
 }
 
@@ -48,8 +49,29 @@ impl Action {
         self.required.effect = effect;
     }
 
-    pub fn valid(&self) -> bool {
-        self.valid_cost() && self.valid_target() && self.valid_effect()
+    pub fn pay(&self, game: &mut Game) -> bool {
+        return match &self.required.cost {
+            Cost::None => true,
+            Cost::Mana(_) => match &self.choices.cost {
+                Choice::Mana(mana) => {
+                    return if let Some(player) = game.get_player(self.player_id) {
+                        player.mana -= *mana;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            },
+            Cost::Tap(_) => match &self.choices.cost {
+                Choice::Card(card_id) => tap_card(game, *card_id, Some(self.card_id)),
+                _ => false,
+            },
+        };
+    }
+
+    pub fn valid(&self, game: &mut Game) -> bool {
+        self.valid_cost() && self.valid_target() && self.valid_effect(game)
     }
 
     fn valid_cost(&self) -> bool {
@@ -57,7 +79,7 @@ impl Action {
             Cost::None => true,
             Cost::Mana(mana) => self.choices.cost.validate_mana(&mana),
             Cost::Tap(target) => match target {
-                Target::Source => self.choices.cost.validate_tap(self.card_id),
+                Target::Source => self.choices.cost.validate_card(self.card_id),
                 _ => true,
             },
         };
@@ -72,9 +94,23 @@ impl Action {
         };
     }
 
-    fn valid_effect(&self) -> bool {
+    fn valid_effect(&self, game: &mut Game) -> bool {
         return match &self.required.effect {
             Effect::Mana(mana) => self.choices.effect.validate_mana(mana),
+            Effect::Discard(card_count) => {
+                return if let Choice::CardsExact(cards) = &self.choices.effect {
+                    return cards.len() == *card_count
+                        && cards.iter().all(|card_id| {
+                            if let Some(card) = game.get_card(*card_id) {
+                                card.owner_id == self.player_id
+                            } else {
+                                false
+                            }
+                        });
+                } else {
+                    false
+                };
+            }
             _ => true,
         };
     }
@@ -100,22 +136,13 @@ pub enum Choice {
     Mana(Mana),
     Player(ObjectId),
     Card(ObjectId),
-    Tap(ObjectId),
+    CardsExact(Vec<ObjectId>),
 }
 
 impl Choice {
     fn validate_mana(&self, cost: &Mana) -> bool {
         if let Choice::Mana(mana) = self {
             if mana.enough(cost) {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn validate_tap(&self, card_id: ObjectId) -> bool {
-        if let Choice::Tap(tapped_card) = self {
-            if *tapped_card == card_id {
                 return true;
             }
         }

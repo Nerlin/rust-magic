@@ -1,17 +1,23 @@
 use std::collections::HashMap;
 
+use indexmap::IndexSet;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+
 use crate::{
     abilities::Effect,
     action::{Action, Choice},
     card::{Card, Zone},
-    events::{CardEvent, Event},
+    events::Event,
     mana::{Color, Mana},
+    turn::{Phase, Turn},
 };
 
 pub struct Game {
+    pub turn: Turn,
     pub status: GameStatus,
-    players: Vec<Player>,
-    cards: HashMap<usize, Card>,
+    pub(crate) players: Vec<Player>,
+    pub(crate) cards: HashMap<usize, Card>,
     stack: Vec<StackEntry>,
     uid: ObjectId,
 }
@@ -32,6 +38,10 @@ impl Game {
             stack: vec![],
             players: vec![],
             cards: HashMap::new(),
+            turn: Turn {
+                phase: Phase::Untap,
+                active_player: 0,
+            },
         }
     }
 
@@ -57,6 +67,14 @@ impl Game {
         None
     }
 
+    pub fn get_player_ids(&self) -> Vec<ObjectId> {
+        self.players
+            .iter()
+            .map(|player| player.id)
+            .collect::<Vec<ObjectId>>()
+            .clone()
+    }
+
     pub fn add_card(&mut self, mut card: Card) -> ObjectId {
         let card_id = self.get_uid();
         card.id = card_id;
@@ -79,20 +97,59 @@ pub struct Player {
     pub id: ObjectId,
     pub life: u16,
     pub mana: Mana,
-    pub deck: Vec<ObjectId>,
-    pub hand: Vec<ObjectId>,
+
+    pub library: IndexSet<ObjectId>,
+    pub hand: IndexSet<ObjectId>,
+    pub battlefield: IndexSet<ObjectId>,
+    pub graveyard: IndexSet<ObjectId>,
+
+    pub max_hand_size: usize,
 }
+
+pub const DEFAULT_HAND_SIZE: usize = 7;
+pub const DEFAULT_PLAYER_LIFE: u16 = 20;
 
 impl Player {
     pub fn new() -> Player {
         Player {
             id: 0,
-            life: 20,
+            life: DEFAULT_PLAYER_LIFE,
             mana: Mana::new(),
-            deck: Vec::new(),
-            hand: Vec::new(),
+            library: IndexSet::new(),
+            hand: IndexSet::new(),
+            battlefield: IndexSet::new(),
+            graveyard: IndexSet::new(),
+            max_hand_size: DEFAULT_HAND_SIZE,
         }
     }
+
+    pub fn zones(&self) -> Vec<(Zone, &IndexSet<ObjectId>)> {
+        vec![
+            (Zone::Library, &self.library),
+            (Zone::Hand, &self.hand),
+            (Zone::Battlefield, &self.battlefield),
+            (Zone::Graveyard, &self.graveyard),
+        ]
+    }
+
+    pub fn zones_mut(&mut self) -> Vec<(Zone, &mut IndexSet<ObjectId>)> {
+        vec![
+            (Zone::Library, &mut self.library),
+            (Zone::Hand, &mut self.hand),
+            (Zone::Battlefield, &mut self.battlefield),
+            (Zone::Graveyard, &mut self.graveyard),
+        ]
+    }
+}
+
+pub fn start_game(game: &mut Game) -> Result<(), &str> {
+    if game.players.len() != 2 {
+        return Err("The game must include exactly two players.");
+    }
+
+    let active_player = game.players.choose(&mut thread_rng()).unwrap();
+    game.turn = Turn::new(active_player.id);
+    Ok(())
 }
 
 pub fn create_ability_action(
@@ -134,11 +191,11 @@ pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, actio
         return;
     };
 
-    if !action.valid() {
+    if !action.valid(game) {
         return;
     }
 
-    if !pay_cost(game, &action) {
+    if !action.pay(game) {
         return;
     }
 
@@ -152,52 +209,40 @@ pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, actio
     }
 }
 
-fn pay_cost(game: &mut Game, action: &Action) -> bool {
-    return match &action.choices.cost {
-        Choice::Mana(mana) => {
-            return if let Some(player) = game.get_player(action.player_id) {
-                player.mana -= *mana;
-                true
-            } else {
-                false
-            }
+pub(crate) fn dispatch_event(game: &mut Game, event: Event) {
+    run_player_triggers(game, game.turn.active_player, &event);
+    for player_id in game.get_player_ids() {
+        if player_id != game.turn.active_player {
+            run_player_triggers(game, player_id, &event);
         }
-        Choice::Tap(target) => {
-            if let Some(card) = game.get_card(*target) {
-                let tapped = card.tap();
-                if tapped {
-                    dispatch_event(
-                        game,
-                        Event::Tap(CardEvent {
-                            owner: action.player_id,
-                            source: Some(action.card_id),
-                            card: *target,
-                        }),
-                    );
-                }
-                return tapped;
-            }
-            false
-        }
-        _ => false,
-    };
+    }
 }
 
-pub(crate) fn dispatch_event(game: &mut Game, event: Event) {
-    // TODO: First iterate through the active player cards
-    for card in game.cards.values() {
-        if card.zone == Zone::Battlefield {
-            for trigger in card.abilities.triggers.iter() {
-                if event.meets(&trigger.condition) {
-                    let mut action = Action::new(card.owner_id, card.id);
-                    action.set_required_target(trigger.target.clone());
-                    action.set_required_effect(trigger.effect.clone());
+fn run_player_triggers(game: &mut Game, player_id: ObjectId, event: &Event) {
+    let player = if let Some(player) = game.get_player(player_id) {
+        player
+    } else {
+        return;
+    };
 
-                    game.stack.push(StackEntry {
-                        effect: trigger.effect.clone(),
-                        action,
-                    });
-                }
+    let battlefield = player.battlefield.clone();
+    for card_id in battlefield {
+        let triggers = if let Some(card) = game.get_card(card_id) {
+            card.abilities.triggers.clone()
+        } else {
+            vec![]
+        };
+
+        for trigger in triggers.iter() {
+            if event.meets(&trigger.condition) {
+                let mut action = Action::new(player_id, card_id);
+                action.set_required_target(trigger.target.clone());
+                action.set_required_effect(trigger.effect.clone());
+
+                game.stack.push(StackEntry {
+                    effect: trigger.effect.clone(),
+                    action,
+                });
             }
         }
     }
@@ -230,6 +275,14 @@ fn resolve_stack_effect(game: &mut Game, entry: StackEntry) {
                 }
                 _ => {}
             },
+            Effect::Discard(_) => match entry.action.choices.effect {
+                Choice::CardsExact(cards) => {
+                    for card_id in cards.iter() {
+                        discard(game, *card_id);
+                    }
+                }
+                _ => {}
+            },
         }
     }
 }
@@ -243,14 +296,21 @@ fn take_damage(game: &mut Game, player_id: ObjectId, damage: u16) {
     }
 }
 
+fn discard(game: &mut Game, card_id: ObjectId) {
+    if let Some(card) = game.get_card(card_id) {
+        card.zone = Zone::Graveyard;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
         abilities::{ActivatedAbility, Condition, Cost, Effect, Target, TriggeredAbility},
         action::Choice,
-        card::{Card, CardType, Zone},
+        card::{put_on_battlefield, Card, CardType, Zone},
         game::{create_ability_action, resolve_stack, Game, GameStatus},
         mana::Mana,
+        turn::Turn,
     };
 
     use super::{play_ability, take_damage, Player};
@@ -273,7 +333,7 @@ mod tests {
         let card_id = game.add_card(card);
 
         let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();
-        action.choices.cost = Choice::Tap(card_id);
+        action.choices.cost = Choice::Card(card_id);
 
         play_ability(&mut game, card_id, 0, action);
 
@@ -288,11 +348,11 @@ mod tests {
     fn test_city_of_brass() {
         let mut game = Game::new();
         let player_id = game.add_player(Player::new());
+        game.turn = Turn::new(player_id);
 
         let mut card = Card::default();
         card.name = String::from("City of Brass");
         card.kind = CardType::Land;
-        card.zone = Zone::Battlefield;
         card.owner_id = player_id;
         card.abilities.activated.push({
             ActivatedAbility {
@@ -310,8 +370,10 @@ mod tests {
         });
         let card_id = game.add_card(card);
 
+        put_on_battlefield(&mut game, card_id);
+
         let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();
-        action.choices.cost = Choice::Tap(card_id);
+        action.choices.cost = Choice::Card(card_id);
         action.choices.effect = Choice::Mana(Mana::from("B"));
 
         play_ability(&mut game, card_id, 0, action);
@@ -333,7 +395,6 @@ mod tests {
 
         let mut card = Card::default();
         card.kind = CardType::Artifact;
-        card.zone = Zone::Battlefield;
         card.owner_id = player_id;
         card.abilities.activated.push(ActivatedAbility {
             cost: Cost::Mana(Mana::from("R")),
@@ -341,6 +402,8 @@ mod tests {
             target: Target::Player,
         });
         let card_id = game.add_card(card);
+
+        put_on_battlefield(&mut game, card_id);
 
         let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();
         action.choices.cost = Choice::Mana(Mana::from("R"));

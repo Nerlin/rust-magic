@@ -1,6 +1,7 @@
 use crate::{
     abilities::{Condition, Target},
     game::ObjectId,
+    turn::Phase,
 };
 
 #[derive(Debug)]
@@ -8,6 +9,7 @@ pub enum Event {
     Tap(CardEvent),
     Untap(CardEvent),
     Draw(CardEvent),
+    Phase(PhaseEvent),
 }
 
 impl Event {
@@ -47,6 +49,13 @@ impl Event {
                 }
             }
             Event::Draw(_) => condition == &Condition::Draw,
+            Event::Phase(event) => {
+                if let Condition::Phase(phase) = condition {
+                    phase == &event.phase
+                } else {
+                    false
+                }
+            }
         }
     }
 }
@@ -61,4 +70,10 @@ pub struct CardEvent {
 
     /// The card targeted by the event
     pub card: ObjectId,
+}
+
+#[derive(Debug)]
+pub struct PhaseEvent {
+    pub owner: ObjectId,
+    pub phase: Phase,
 }
