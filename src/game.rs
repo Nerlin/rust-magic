@@ -9,10 +9,17 @@ use crate::{
 };
 
 pub struct Game {
+    pub status: GameStatus,
     players: Vec<Player>,
     cards: HashMap<usize, Card>,
     stack: Vec<StackEntry>,
     uid: ObjectId,
+}
+
+#[derive(Debug, PartialEq, PartialOrd)]
+pub enum GameStatus {
+    Play,
+    Lose(ObjectId),
 }
 
 pub type ObjectId = usize;
@@ -20,6 +27,7 @@ pub type ObjectId = usize;
 impl Game {
     pub fn new() -> Game {
         Game {
+            status: GameStatus::Play,
             uid: 0,
             stack: vec![],
             players: vec![],
@@ -71,6 +79,8 @@ pub struct Player {
     pub id: ObjectId,
     pub life: u16,
     pub mana: Mana,
+    pub deck: Vec<ObjectId>,
+    pub hand: Vec<ObjectId>,
 }
 
 impl Player {
@@ -79,6 +89,8 @@ impl Player {
             id: 0,
             life: 20,
             mana: Mana::new(),
+            deck: Vec::new(),
+            hand: Vec::new(),
         }
     }
 }
@@ -158,7 +170,7 @@ fn pay_cost(game: &mut Game, action: &Action) -> bool {
                         game,
                         Event::Tap(CardEvent {
                             owner: action.player_id,
-                            source: action.card_id,
+                            source: Some(action.card_id),
                             card: *target,
                         }),
                     );
@@ -171,7 +183,7 @@ fn pay_cost(game: &mut Game, action: &Action) -> bool {
     };
 }
 
-pub fn dispatch_event(game: &mut Game, event: Event) {
+pub(crate) fn dispatch_event(game: &mut Game, event: Event) {
     // TODO: First iterate through the active player cards
     for card in game.cards.values() {
         if card.zone == Zone::Battlefield {
@@ -214,14 +226,19 @@ fn resolve_stack_effect(game: &mut Game, entry: StackEntry) {
             }
             Effect::Damage(damage) => match entry.action.choices.target {
                 Choice::Player(player_id) => {
-                    if owner.id == player_id {
-                        owner.life -= damage;
-                    } else if let Some(player) = game.get_player(player_id) {
-                        player.life -= damage;
-                    }
+                    take_damage(game, player_id, damage);
                 }
                 _ => {}
             },
+        }
+    }
+}
+
+fn take_damage(game: &mut Game, player_id: ObjectId, damage: u16) {
+    if let Some(player) = game.get_player(player_id) {
+        player.life = player.life.saturating_sub(damage);
+        if player.life == 0 {
+            game.status = GameStatus::Lose(player_id);
         }
     }
 }
@@ -232,11 +249,11 @@ mod tests {
         abilities::{ActivatedAbility, Condition, Cost, Effect, Target, TriggeredAbility},
         action::Choice,
         card::{Card, CardType, Zone},
-        game::{create_ability_action, resolve_stack, Game},
+        game::{create_ability_action, resolve_stack, Game, GameStatus},
         mana::Mana,
     };
 
-    use super::{play_ability, Player};
+    use super::{play_ability, take_damage, Player};
 
     #[test]
     fn test_basic_land() {
@@ -337,5 +354,19 @@ mod tests {
 
         let player = game.get_player(player_id).unwrap();
         assert_eq!(player.mana.red, 0);
+    }
+
+    #[test]
+    fn test_lethal_damage() {
+        let mut game = Game::new();
+        let mut player = Player::new();
+        player.life = 3;
+
+        let player_id = game.add_player(player);
+        take_damage(&mut game, player_id, 3);
+
+        let player = game.get_player(player_id).unwrap();
+        assert_eq!(player.life, 0);
+        assert_eq!(game.status, GameStatus::Lose(player_id));
     }
 }

@@ -43,6 +43,8 @@ pub enum Zone {
     None,
     Battlefield,
     Graveyard,
+    Library,
+    Hand,
 }
 
 #[derive(Default)]

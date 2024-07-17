@@ -4,6 +4,7 @@ use crate::{
     mana::Mana,
 };
 
+#[derive(Debug)]
 pub struct Action {
     pub player_id: ObjectId,
     pub card_id: ObjectId,
@@ -79,18 +80,21 @@ impl Action {
     }
 }
 
+#[derive(Debug)]
 pub struct Required {
     pub cost: Cost,
     pub target: Target,
     pub effect: Effect,
 }
 
+#[derive(Debug)]
 pub struct Choices {
     pub cost: Choice,
     pub target: Choice,
     pub effect: Choice,
 }
 
+#[derive(Debug)]
 pub enum Choice {
     None,
     Mana(Mana),
