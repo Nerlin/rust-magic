@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    abilities::Effect,
+    abilities::{take_damage, Effect},
     action::Action,
     card::{put_on_graveyard, untap_card, CardType, Zone},
     deck::draw_card,
-    events::{Event, PhaseEvent},
-    game::{dispatch_event, take_damage, Game, ObjectId},
+    events::{dispatch_event, Event, PhaseEvent},
+    game::{Game, ObjectId},
 };
 
 pub struct Turn {

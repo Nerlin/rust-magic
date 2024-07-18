@@ -1,6 +1,7 @@
 use crate::{
     abilities::{Condition, Target},
-    game::ObjectId,
+    action::Action,
+    game::{Game, ObjectId, StackEntry},
     turn::Phase,
 };
 
@@ -76,4 +77,43 @@ pub struct CardEvent {
 pub struct PhaseEvent {
     pub owner: ObjectId,
     pub phase: Phase,
+}
+
+pub(crate) fn dispatch_event(game: &mut Game, event: Event) {
+    run_player_triggers(game, game.turn.active_player, &event);
+    for player_id in game.get_player_ids() {
+        if player_id != game.turn.active_player {
+            run_player_triggers(game, player_id, &event);
+        }
+    }
+}
+
+fn run_player_triggers(game: &mut Game, player_id: ObjectId, event: &Event) {
+    let player = if let Some(player) = game.get_player(player_id) {
+        player
+    } else {
+        return;
+    };
+
+    let battlefield = player.battlefield.clone();
+    for card_id in battlefield {
+        let triggers = if let Some(card) = game.get_card(card_id) {
+            card.abilities.triggers.clone()
+        } else {
+            vec![]
+        };
+
+        for trigger in triggers.iter() {
+            if event.meets(&trigger.condition) {
+                let mut action = Action::new(player_id, card_id);
+                action.set_required_target(trigger.target.clone());
+                action.set_required_effect(trigger.effect.clone());
+
+                game.stack.push(StackEntry {
+                    effect: trigger.effect.clone(),
+                    action,
+                });
+            }
+        }
+    }
 }

@@ -4,8 +4,8 @@ use rand::thread_rng;
 
 use crate::{
     card::Zone,
-    events::{CardEvent, Event},
-    game::{dispatch_event, Game, GameStatus, ObjectId},
+    events::{dispatch_event, CardEvent, Event},
+    game::{Game, GameStatus, ObjectId},
 };
 
 pub fn draw_card(game: &mut Game, player_id: ObjectId) -> Option<ObjectId> {
