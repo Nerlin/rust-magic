@@ -10,7 +10,7 @@ use crate::{
     card::{Card, Zone},
     events::Event,
     mana::{Color, Mana},
-    turn::{Phase, Turn},
+    turn::Turn,
 };
 
 pub struct Game {
@@ -38,10 +38,7 @@ impl Game {
             stack: vec![],
             players: vec![],
             cards: HashMap::new(),
-            turn: Turn {
-                phase: Phase::Untap,
-                active_player: 0,
-            },
+            turn: Turn::new(0),
         }
     }
 
@@ -95,7 +92,7 @@ pub struct StackEntry {
 
 pub struct Player {
     pub id: ObjectId,
-    pub life: u16,
+    pub life: i16,
     pub mana: Mana,
 
     pub library: IndexSet<ObjectId>,
@@ -107,7 +104,7 @@ pub struct Player {
 }
 
 pub const DEFAULT_HAND_SIZE: usize = 7;
-pub const DEFAULT_PLAYER_LIFE: u16 = 20;
+pub const DEFAULT_PLAYER_LIFE: i16 = 20;
 
 impl Player {
     pub fn new() -> Player {
@@ -142,14 +139,13 @@ impl Player {
     }
 }
 
-pub fn start_game(game: &mut Game) -> Result<(), &str> {
+pub fn start_game(game: &mut Game) {
     if game.players.len() != 2 {
-        return Err("The game must include exactly two players.");
+        panic!("The game must include exactly two players.");
     }
 
     let active_player = game.players.choose(&mut thread_rng()).unwrap();
     game.turn = Turn::new(active_player.id);
-    Ok(())
 }
 
 pub fn create_ability_action(
@@ -287,16 +283,20 @@ fn resolve_stack_effect(game: &mut Game, entry: StackEntry) {
     }
 }
 
-fn take_damage(game: &mut Game, player_id: ObjectId, damage: u16) {
+pub(crate) fn take_damage(game: &mut Game, player_id: ObjectId, damage: u16) {
+    if damage == 0 {
+        return;
+    }
+
     if let Some(player) = game.get_player(player_id) {
-        player.life = player.life.saturating_sub(damage);
+        player.life = player.life.saturating_sub(damage as i16);
         if player.life == 0 {
             game.status = GameStatus::Lose(player_id);
         }
     }
 }
 
-fn discard(game: &mut Game, card_id: ObjectId) {
+pub(crate) fn discard(game: &mut Game, card_id: ObjectId) {
     if let Some(card) = game.get_card(card_id) {
         card.zone = Zone::Graveyard;
     }

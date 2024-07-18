@@ -90,6 +90,12 @@ fn change_zone(game: &mut Game, card_id: ObjectId, zone: Zone) {
     let player_id;
     if let Some(card) = game.get_card(card_id) {
         card.zone = zone.clone();
+        card.tapped = false;
+
+        if let CardType::Creature(creature) = &mut card.kind {
+            creature.reset();
+        }
+
         player_id = card.owner_id;
     } else {
         return;
@@ -121,4 +127,48 @@ pub enum CardType {
     #[default]
     Land,
     Artifact,
+    Creature(CreatureState),
+}
+
+#[derive(Default)]
+pub struct CreatureState {
+    pub current: CreatureParams,
+    pub default: CreatureParams,
+}
+
+#[derive(Default)]
+pub struct CreatureParams {
+    pub power: i16,
+    pub toughness: i16,
+    pub motion_sickness: bool,
+}
+
+impl CreatureState {
+    pub fn new(power: i16, toughness: i16) -> CreatureState {
+        CreatureState {
+            current: CreatureParams {
+                power,
+                toughness,
+                motion_sickness: true,
+            },
+            default: CreatureParams {
+                power,
+                toughness,
+                motion_sickness: true,
+            },
+        }
+    }
+
+    /// Restores power and toughness of this creature to its default values.
+    pub fn restore(&mut self) {
+        self.current.power = self.default.power;
+        self.current.toughness = self.default.toughness;
+    }
+
+    /// Resets the current state to the default state of this creature
+    pub fn reset(&mut self) {
+        self.current.power = self.default.power;
+        self.current.toughness = self.default.toughness;
+        self.current.motion_sickness = self.default.motion_sickness;
+    }
 }
