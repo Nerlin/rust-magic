@@ -26,9 +26,9 @@ const COLOR_CODES: phf::Map<char, Color> = phf_map! {
 
 #[derive(Clone, Copy, Debug, Default, Hash, PartialOrd, PartialEq, Ord, Eq)]
 pub struct Mana {
-    pub red: u8,
-    pub white: u8,
     pub blue: u8,
+    pub white: u8,
+    pub red: u8,
     pub black: u8,
     pub green: u8,
     pub colorless: u8,
@@ -38,9 +38,9 @@ pub struct Mana {
 impl Mana {
     pub fn new() -> Mana {
         Mana {
-            red: 0,
-            white: 0,
             blue: 0,
+            white: 0,
+            red: 0,
             black: 0,
             green: 0,
             colorless: 0,
@@ -48,13 +48,23 @@ impl Mana {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.blue = 0;
+        self.white = 0;
+        self.red = 0;
+        self.black = 0;
+        self.green = 0;
+        self.colorless = 0;
+        self.any = 0;
+    }
+
     pub fn set(&mut self, color: &Color, amount: u8) {
         match color {
             Color::Colorless => self.colorless = amount,
-            Color::White => self.white = amount,
             Color::Blue => self.blue = amount,
-            Color::Black => self.black = amount,
+            Color::White => self.white = amount,
             Color::Red => self.red = amount,
+            Color::Black => self.black = amount,
             Color::Green => self.green = amount,
             Color::Any => self.any = amount,
         }
@@ -63,10 +73,10 @@ impl Mana {
     pub fn get(&self, color: &Color) -> u8 {
         match color {
             Color::Colorless => self.colorless,
-            Color::White => self.white,
             Color::Blue => self.blue,
-            Color::Black => self.black,
+            Color::White => self.white,
             Color::Red => self.red,
+            Color::Black => self.black,
             Color::Green => self.green,
             Color::Any => self.any,
         }

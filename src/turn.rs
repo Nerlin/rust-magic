@@ -10,21 +10,26 @@ use crate::{
 };
 
 pub struct Turn {
-    pub phase: Phase,
+    pub step: Step,
+    pub priority: Option<Priority>,
     pub combat: Combat,
     pub active_player: ObjectId,
+    pub lands_played: usize,
 }
 
 impl Turn {
     pub fn new(player_id: ObjectId) -> Turn {
         Turn {
-            phase: Phase::Untap,
+            step: Step::Untap,
+            priority: None,
             combat: Combat::new(),
             active_player: player_id,
+            lands_played: 0,
         }
     }
 }
 
+#[derive(Default)]
 pub struct Priority {
     pub player_id: ObjectId,
     passes: HashSet<ObjectId>,
@@ -53,7 +58,7 @@ impl Priority {
 }
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
-pub enum Phase {
+pub enum Step {
     Untap,
     Upkeep,
     Draw,
@@ -64,6 +69,12 @@ pub enum Phase {
     Postcombat,
     End,
     Cleanup,
+}
+
+impl Step {
+    pub fn main(&self) -> bool {
+        self == &Step::Precombat || self == &Step::Postcombat
+    }
 }
 
 pub struct Combat {
@@ -90,7 +101,7 @@ pub fn all_passed(game: &Game, priority: Priority) -> bool {
 }
 
 pub fn untap_phase(game: &mut Game) {
-    game.turn.phase = Phase::Untap;
+    game.turn.step = Step::Untap;
 
     let tapped_cards: Vec<ObjectId> = game
         .cards
@@ -107,7 +118,7 @@ pub fn untap_phase(game: &mut Game) {
         untap_card(game, card_id, None);
         if let Some(card) = game.get_card(card_id) {
             if let CardType::Creature(creature) = &mut card.kind {
-                creature.current.motion_sickness = false;
+                creature.motion_sickness.current = false;
             }
         }
     }
@@ -116,35 +127,36 @@ pub fn untap_phase(game: &mut Game) {
         game,
         Event::Phase(PhaseEvent {
             owner: game.turn.active_player,
-            phase: Phase::Untap,
+            phase: Step::Untap,
         }),
     );
 }
 
-pub fn upkeep_phase(game: &mut Game) -> Priority {
-    change_phase(game, Phase::Upkeep)
+pub fn upkeep_phase(game: &mut Game) {
+    change_phase(game, Step::Upkeep);
 }
 
-pub fn draw_phase(game: &mut Game) -> Priority {
-    game.turn.phase = Phase::Draw;
+pub fn draw_phase(game: &mut Game) {
+    game.turn.step = Step::Draw;
     draw_card(game, game.turn.active_player);
 
     dispatch_event(
         game,
         Event::Phase(PhaseEvent {
             owner: game.turn.active_player,
-            phase: Phase::Draw,
+            phase: Step::Draw,
         }),
     );
-    Priority::new(game.turn.active_player)
+    game.turn.priority = Some(Priority::new(game.turn.active_player));
 }
 
-pub fn precombat_phase(game: &mut Game) -> Priority {
-    change_phase(game, Phase::Precombat)
+pub fn precombat_phase(game: &mut Game) {
+    change_phase(game, Step::Precombat);
 }
 
 pub fn declare_attackers_phase_begin(game: &mut Game) {
-    game.turn.phase = Phase::DeclareAttackers;
+    game.turn.step = Step::DeclareAttackers;
+    game.turn.priority = None;
 }
 
 pub fn declare_attacker(game: &mut Game, attacker_id: ObjectId, target: ObjectId) {
@@ -161,13 +173,13 @@ pub fn can_declare_attacker(game: &mut Game, card_id: ObjectId) -> bool {
             return false;
         }
         if let CardType::Creature(creature) = &card.kind {
-            return !card.tapped && !creature.current.motion_sickness;
+            return !card.tapped && !creature.motion_sickness.current;
         }
     }
     false
 }
 
-pub fn declare_attackers_phase_end(game: &mut Game) -> Priority {
+pub fn declare_attackers_phase_end(game: &mut Game) {
     for attacker in game.turn.combat.attackers.clone().keys() {
         if let Some(card) = game.get_card(*attacker) {
             card.tap();
@@ -178,14 +190,15 @@ pub fn declare_attackers_phase_end(game: &mut Game) -> Priority {
         game,
         Event::Phase(PhaseEvent {
             owner: game.turn.active_player,
-            phase: Phase::DeclareAttackers,
+            phase: Step::DeclareAttackers,
         }),
     );
-    Priority::new(game.turn.active_player)
+    game.turn.priority = Some(Priority::new(game.turn.active_player));
 }
 
 pub fn declare_blockers_phase_begin(game: &mut Game) {
-    game.turn.phase = Phase::DeclareBlockers;
+    game.turn.step = Step::DeclareBlockers;
+    game.turn.priority = None;
 }
 
 pub fn declare_blocker(game: &mut Game, blocker: ObjectId, attacker: ObjectId) {
@@ -220,21 +233,21 @@ pub fn can_declare_blocker(game: &mut Game, blocker: ObjectId, attacker: ObjectI
     false
 }
 
-pub fn declare_blockers_phase_end(game: &mut Game) -> Priority {
+pub fn declare_blockers_phase_end(game: &mut Game) {
     dispatch_event(
         game,
         Event::Phase(PhaseEvent {
             owner: game.turn.active_player,
-            phase: Phase::DeclareBlockers,
+            phase: Step::DeclareBlockers,
         }),
     );
-    Priority::new(game.turn.active_player)
+    game.turn.priority = Some(Priority::new(game.turn.active_player));
 }
 
 pub fn combat(game: &mut Game) {
     // TODO: Implement combat damage distribution
 
-    game.turn.phase = Phase::Combat;
+    game.turn.step = Step::Combat;
 
     let attackers = game.turn.combat.attackers.clone();
     let blockers = game.turn.combat.blockers.clone();
@@ -243,7 +256,7 @@ pub fn combat(game: &mut Game) {
         let mut attack_damage = 0;
         if let Some(card) = game.get_card(*attacker) {
             if let CardType::Creature(creature) = &card.kind {
-                attack_damage = creature.current.power
+                attack_damage = creature.power.current
             }
         }
 
@@ -255,15 +268,15 @@ pub fn combat(game: &mut Game) {
                 // Blocker takes damage.
                 if let Some(card) = game.get_card(*blocker) {
                     if let CardType::Creature(creature) = &mut card.kind {
-                        block_damage = creature.current.power;
-                        creature.current.toughness -= attack_damage;
+                        block_damage = creature.power.current;
+                        creature.toughness.current -= attack_damage;
                     }
                 }
 
                 // Attacker takes damage.
                 if let Some(card) = game.get_card(*attacker) {
                     if let CardType::Creature(creature) = &mut card.kind {
-                        creature.current.toughness -= block_damage;
+                        creature.toughness.current -= block_damage;
                     }
                 }
             }
@@ -277,7 +290,7 @@ pub fn combat(game: &mut Game) {
     for combatant in attackers.keys().chain(blockers.values().flatten()) {
         if let Some(card) = game.get_card(*combatant) {
             if let CardType::Creature(creature) = &mut card.kind {
-                if creature.current.toughness <= 0 {
+                if creature.toughness.current <= 0 {
                     dead.push(combatant);
                 }
             }
@@ -289,16 +302,16 @@ pub fn combat(game: &mut Game) {
     }
 }
 
-pub fn postcombat_phase(game: &mut Game) -> Priority {
-    change_phase(game, Phase::Postcombat)
+pub fn postcombat_phase(game: &mut Game) {
+    change_phase(game, Step::Postcombat);
 }
 
-pub fn end_phase(game: &mut Game) -> Priority {
-    change_phase(game, Phase::End)
+pub fn end_phase(game: &mut Game) {
+    change_phase(game, Step::End);
 }
 
 pub fn cleanup_phase(game: &mut Game) -> Option<Action> {
-    game.turn.phase = Phase::Cleanup;
+    game.turn.step = Step::Cleanup;
 
     for card in game.cards.values_mut() {
         if let CardType::Creature(creature) = &mut card.kind {
@@ -308,9 +321,9 @@ pub fn cleanup_phase(game: &mut Game) -> Option<Action> {
 
     if let Some(player) = game.get_player(game.turn.active_player) {
         let hand_size = player.hand.len();
-        if hand_size > player.max_hand_size {
+        if hand_size > player.hand_size_limit.current {
             let mut action = Action::new(player.id, 0);
-            action.set_required_effect(Effect::Discard(hand_size - player.max_hand_size));
+            action.set_required_effect(Effect::Discard(hand_size - player.hand_size_limit.current));
 
             return Some(action);
         }
@@ -318,20 +331,25 @@ pub fn cleanup_phase(game: &mut Game) -> Option<Action> {
     None
 }
 
-pub fn pass_turn(game: &mut Game) -> bool {
-    let mut passed = false;
-
-    for player_id in game.get_player_ids() {
-        if player_id != game.turn.active_player {
-            game.turn = Turn::new(player_id);
-            passed = true;
-        }
+pub fn pass_priority(game: &mut Game) {
+    let next_player = game.get_next_player(game.turn.active_player);
+    if let Some(priority) = &mut game.turn.priority {
+        priority.pass(next_player);
     }
-    passed
 }
 
-fn change_phase(game: &mut Game, phase: Phase) -> Priority {
-    game.turn.phase = phase.clone();
+pub fn pass_turn(game: &mut Game) {
+    let next_player = game.get_next_player(game.turn.active_player);
+    game.turn = Turn::new(next_player);
+}
+
+fn change_phase(game: &mut Game, phase: Step) {
+    game.turn.step = phase.clone();
+
+    // Purge mana pools of all players between phases
+    for player in game.players.iter_mut() {
+        player.mana.clear();
+    }
 
     dispatch_event(
         game,
@@ -340,7 +358,7 @@ fn change_phase(game: &mut Game, phase: Phase) -> Priority {
             phase,
         }),
     );
-    Priority::new(game.turn.active_player)
+    game.turn.priority = Some(Priority::new(game.turn.active_player));
 }
 
 #[cfg(test)]
@@ -390,10 +408,9 @@ mod tests {
         game.turn = Turn::new(player_id);
 
         let mut creature_state = CreatureState::new(3, 1);
-        creature_state.default.motion_sickness = false;
+        creature_state.motion_sickness.default = false;
 
-        let mut card = Card::new();
-        card.owner_id = player_id;
+        let mut card = Card::new(player_id);
         card.kind = CardType::Creature(creature_state);
         let attacker_id = game.add_card(card);
 
@@ -420,16 +437,14 @@ mod tests {
         game.turn = Turn::new(player_id);
 
         let mut creature_state = CreatureState::new(3, 1);
-        creature_state.default.motion_sickness = false;
+        creature_state.motion_sickness.default = false;
 
-        let mut card = Card::new();
-        card.owner_id = player_id;
+        let mut card = Card::new(player_id);
         card.kind = CardType::Creature(creature_state);
         let attacker_id = game.add_card(card);
         put_on_battlefield(&mut game, attacker_id);
 
-        let mut card = Card::new();
-        card.owner_id = opponent_id;
+        let mut card = Card::new(opponent_id);
         card.kind = CardType::Creature(CreatureState::new(2, 2));
         let blocker_id = game.add_card(card);
         put_on_battlefield(&mut game, blocker_id);
@@ -460,22 +475,19 @@ mod tests {
         game.turn = Turn::new(player_id);
 
         let mut creature_state = CreatureState::new(3, 3);
-        creature_state.default.motion_sickness = false;
+        creature_state.motion_sickness.default = false;
 
-        let mut card = Card::new();
-        card.owner_id = player_id;
+        let mut card = Card::new(player_id);
         card.kind = CardType::Creature(creature_state);
         let attacker_id = game.add_card(card);
         put_on_battlefield(&mut game, attacker_id);
 
-        let mut card = Card::new();
-        card.owner_id = opponent_id;
+        let mut card = Card::new(opponent_id);
         card.kind = CardType::Creature(CreatureState::new(1, 2));
         let blocker_one = game.add_card(card);
         put_on_battlefield(&mut game, blocker_one);
 
-        let mut card = Card::new();
-        card.owner_id = opponent_id;
+        let mut card = Card::new(opponent_id);
         card.kind = CardType::Creature(CreatureState::new(2, 2));
         let blocker_two = game.add_card(card);
         put_on_battlefield(&mut game, blocker_two);

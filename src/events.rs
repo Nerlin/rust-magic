@@ -1,8 +1,8 @@
 use crate::{
     abilities::{Condition, Target},
     action::Action,
-    game::{Game, ObjectId, StackEntry},
-    turn::Phase,
+    game::{Game, ObjectId, Stacked},
+    turn::Step,
 };
 
 #[derive(Debug)]
@@ -76,7 +76,7 @@ pub struct CardEvent {
 #[derive(Debug)]
 pub struct PhaseEvent {
     pub owner: ObjectId,
-    pub phase: Phase,
+    pub phase: Step,
 }
 
 pub(crate) fn dispatch_event(game: &mut Game, event: Event) {
@@ -109,7 +109,7 @@ fn run_player_triggers(game: &mut Game, player_id: ObjectId, event: &Event) {
                 action.set_required_target(trigger.target.clone());
                 action.set_required_effect(trigger.effect.clone());
 
-                game.stack.push(StackEntry {
+                game.stack.push(Stacked::Ability {
                     effect: trigger.effect.clone(),
                     action,
                 });

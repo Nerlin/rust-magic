@@ -94,16 +94,8 @@ mod tests {
         let mut game = Game::new();
         let player = Player::new();
         let player_id = game.add_player(player);
-
-        let mut card = Card::default();
-        card.name = String::from("Forest");
-        card.owner_id = player_id;
-        let forest_id = game.add_card(card);
-
-        let mut card = Card::default();
-        card.name = String::from("Mountain");
-        card.owner_id = player_id;
-        let mountain_id = game.add_card(card);
+        let forest_id = game.add_card(Card::new_land(player_id));
+        let mountain_id = game.add_card(Card::new_land(player_id));
 
         put_on_deck_top(&mut game, forest_id, player_id);
         put_on_deck_top(&mut game, mountain_id, player_id);
@@ -119,16 +111,8 @@ mod tests {
         let mut game = Game::new();
         let player = Player::new();
         let player_id = game.add_player(player);
-
-        let mut card = Card::default();
-        card.name = String::from("Forest");
-        card.owner_id = player_id;
-        let forest_id = game.add_card(card);
-
-        let mut card = Card::default();
-        card.name = String::from("Mountain");
-        card.owner_id = player_id;
-        let mountain_id = game.add_card(card);
+        let forest_id = game.add_card(Card::new_land(player_id));
+        let mountain_id = game.add_card(Card::new_land(player_id));
 
         put_on_deck_bottom(&mut game, forest_id, player_id);
         put_on_deck_bottom(&mut game, mountain_id, player_id);
@@ -144,10 +128,7 @@ mod tests {
         let mut game = Game::new();
         let player = Player::new();
         let player_id = game.add_player(player);
-
-        let mut card = Card::default();
-        card.owner_id = player_id;
-        let card_id = game.add_card(card);
+        let card_id = game.add_card(Card::new_sorcery(player_id));
 
         put_on_deck_top(&mut game, card_id, player_id);
         let drawn_card = draw_card(&mut game, player_id);

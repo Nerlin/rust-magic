@@ -17,7 +17,7 @@ pub struct Game {
     pub status: GameStatus,
     pub(crate) players: Vec<Player>,
     pub(crate) cards: HashMap<usize, Card>,
-    pub(crate) stack: Vec<StackEntry>,
+    pub(crate) stack: Vec<Stacked>,
     uid: ObjectId,
 }
 
@@ -71,6 +71,24 @@ impl Game {
             .clone()
     }
 
+    pub fn get_next_player(&self, player_id: ObjectId) -> ObjectId {
+        let mut found = false;
+
+        for player in self.players.iter() {
+            if found {
+                return player.id;
+            } else if player.id == player_id {
+                found = true;
+            }
+        }
+
+        if let Some(player) = self.players.first() {
+            player.id
+        } else {
+            0
+        }
+    }
+
     pub fn add_card(&mut self, mut card: Card) -> ObjectId {
         let card_id = self.get_uid();
         card.id = card_id;
@@ -84,9 +102,9 @@ impl Game {
     }
 }
 
-pub struct StackEntry {
-    pub effect: Effect,
-    pub action: Action,
+pub enum Stacked {
+    Spell { card_id: ObjectId, action: Action },
+    Ability { effect: Effect, action: Action },
 }
 
 pub struct Player {
@@ -99,11 +117,15 @@ pub struct Player {
     pub battlefield: IndexSet<ObjectId>,
     pub graveyard: IndexSet<ObjectId>,
 
-    pub max_hand_size: usize,
+    pub hand_size_limit: Value<usize>,
+
+    /// Defines how many lands this player can play per turn
+    pub land_limit: Value<usize>,
 }
 
 pub const DEFAULT_HAND_SIZE: usize = 7;
 pub const DEFAULT_PLAYER_LIFE: i16 = 20;
+pub const DEFAULT_LAND_LIMIT: usize = 1;
 
 impl Player {
     pub fn new() -> Player {
@@ -115,7 +137,8 @@ impl Player {
             hand: IndexSet::new(),
             battlefield: IndexSet::new(),
             graveyard: IndexSet::new(),
-            max_hand_size: DEFAULT_HAND_SIZE,
+            hand_size_limit: Value::new(DEFAULT_HAND_SIZE),
+            land_limit: Value::new(DEFAULT_LAND_LIMIT),
         }
     }
 
@@ -138,6 +161,25 @@ impl Player {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, PartialOrd)]
+pub struct Value<T: Clone + Copy + Default + PartialEq + PartialOrd> {
+    pub current: T,
+    pub default: T,
+}
+
+impl<T: Copy + Default + PartialEq + PartialOrd> Value<T> {
+    pub fn new(value: T) -> Value<T> {
+        Value {
+            current: value,
+            default: value,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.current = self.default;
+    }
+}
+
 pub fn start_game(game: &mut Game) {
     if game.players.len() != 2 {
         panic!("The game must include exactly two players.");
@@ -145,4 +187,10 @@ pub fn start_game(game: &mut Game) {
 
     let active_player = game.players.choose(&mut thread_rng()).unwrap();
     game.turn = Turn::new(active_player.id);
+}
+
+pub fn add_mana(game: &mut Game, player_id: ObjectId, mana: Mana) {
+    if let Some(player) = game.get_player(player_id) {
+        player.mana += mana;
+    }
 }

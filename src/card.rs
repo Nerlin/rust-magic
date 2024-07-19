@@ -1,8 +1,7 @@
 use crate::{
-    abilities::Abilities,
+    abilities::{Abilities, Cost},
     events::{dispatch_event, CardEvent, Event},
-    game::{Game, ObjectId},
-    mana::Mana,
+    game::{Game, ObjectId, Value},
 };
 
 #[derive(Default)]
@@ -11,7 +10,7 @@ pub struct Card {
     pub owner_id: ObjectId,
     pub name: String,
     pub kind: CardType,
-    pub cost: Mana,
+    pub cost: Cost,
     pub abilities: Abilities,
     pub zone: Zone,
 
@@ -19,8 +18,46 @@ pub struct Card {
 }
 
 impl Card {
-    pub fn new() -> Card {
-        Card::default()
+    pub fn new(owner_id: ObjectId) -> Card {
+        let mut card = Card::default();
+        card.owner_id = owner_id;
+        card
+    }
+
+    pub fn new_land(owner_id: ObjectId) -> Card {
+        let mut card = Card::new(owner_id);
+        card.kind = CardType::Land;
+        card
+    }
+
+    pub fn new_creature(owner_id: ObjectId, state: CreatureState) -> Card {
+        let mut card = Card::new(owner_id);
+        card.kind = CardType::Creature(state);
+        card
+    }
+
+    pub fn new_artifact(owner_id: ObjectId) -> Card {
+        let mut card = Card::new(owner_id);
+        card.kind = CardType::Artifact;
+        card
+    }
+
+    pub fn new_enchantment(owner_id: ObjectId) -> Card {
+        let mut card = Card::new(owner_id);
+        card.kind = CardType::Enchantment;
+        card
+    }
+
+    pub fn new_instant(owner_id: ObjectId) -> Card {
+        let mut card = Card::new(owner_id);
+        card.kind = CardType::Instant;
+        card
+    }
+
+    pub fn new_sorcery(owner_id: ObjectId) -> Card {
+        let mut card = Card::new(owner_id);
+        card.kind = CardType::Sorcery;
+        card
     }
 
     pub fn tap(&mut self) -> bool {
@@ -86,6 +123,14 @@ pub fn put_on_graveyard(game: &mut Game, card_id: ObjectId) {
     change_zone(game, card_id, Zone::Graveyard)
 }
 
+pub fn put_on_stack(game: &mut Game, card_id: ObjectId) {
+    change_zone(game, card_id, Zone::Stack)
+}
+
+pub fn put_in_hand(game: &mut Game, card_id: ObjectId) {
+    change_zone(game, card_id, Zone::Hand)
+}
+
 fn change_zone(game: &mut Game, card_id: ObjectId, zone: Zone) {
     let player_id;
     if let Some(card) = game.get_card(card_id) {
@@ -112,7 +157,7 @@ fn change_zone(game: &mut Game, card_id: ObjectId, zone: Zone) {
     }
 }
 
-#[derive(Clone, Default, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Default, PartialEq, PartialOrd)]
 pub enum Zone {
     #[default]
     None,
@@ -120,55 +165,46 @@ pub enum Zone {
     Graveyard,
     Library,
     Hand,
+    Stack,
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq, PartialOrd)]
 pub enum CardType {
     #[default]
     Land,
     Artifact,
+    Enchantment,
     Creature(CreatureState),
+    Instant,
+    Sorcery,
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq, PartialOrd)]
 pub struct CreatureState {
-    pub current: CreatureParams,
-    pub default: CreatureParams,
-}
-
-#[derive(Default)]
-pub struct CreatureParams {
-    pub power: i16,
-    pub toughness: i16,
-    pub motion_sickness: bool,
+    pub power: Value<i16>,
+    pub toughness: Value<i16>,
+    pub motion_sickness: Value<bool>,
 }
 
 impl CreatureState {
     pub fn new(power: i16, toughness: i16) -> CreatureState {
         CreatureState {
-            current: CreatureParams {
-                power,
-                toughness,
-                motion_sickness: true,
-            },
-            default: CreatureParams {
-                power,
-                toughness,
-                motion_sickness: true,
-            },
+            power: Value::new(power),
+            toughness: Value::new(toughness),
+            motion_sickness: Value::new(true),
         }
     }
 
     /// Restores power and toughness of this creature to its default values.
     pub fn restore(&mut self) {
-        self.current.power = self.default.power;
-        self.current.toughness = self.default.toughness;
+        self.power.reset();
+        self.toughness.reset();
     }
 
     /// Resets the current state to the default state of this creature
     pub fn reset(&mut self) {
-        self.current.power = self.default.power;
-        self.current.toughness = self.default.toughness;
-        self.current.motion_sickness = self.default.motion_sickness;
+        self.power.reset();
+        self.toughness.reset();
+        self.motion_sickness.reset();
     }
 }
