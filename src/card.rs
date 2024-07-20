@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{
     abilities::{Abilities, Cost},
     events::{dispatch_event, CardEvent, Event},
@@ -10,6 +12,7 @@ pub struct Card {
     pub owner_id: ObjectId,
     pub name: String,
     pub kind: CardType,
+    pub subtypes: HashSet<CardSubtype>,
     pub cost: Cost,
     pub abilities: Abilities,
     pub zone: Zone,
@@ -177,6 +180,20 @@ pub enum CardType {
     Creature(CreatureState),
     Instant,
     Sorcery,
+}
+
+#[derive(Clone, Copy, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CardSubtype {
+    #[default]
+    None,
+
+    Forest,
+    Mountain,
+    Swamp,
+    Plains,
+    Island,
+
+    Spirit,
 }
 
 #[derive(Default, PartialEq, PartialOrd)]

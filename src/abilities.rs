@@ -338,7 +338,7 @@ mod tests {
             TriggeredAbility,
         },
         action::{Action, Choice},
-        card::{put_in_hand, put_on_battlefield, Card, CreatureState, Zone},
+        card::{put_in_hand, put_on_battlefield, Card, CardSubtype, CreatureState, Zone},
         game::{add_mana, Game, Player},
         mana::Mana,
         turn::{pass_priority, pass_turn, postcombat_step, precombat_step, upkeep_step, Turn},
@@ -352,6 +352,7 @@ mod tests {
         let mut card = Card::new_land(player_id);
         card.name = String::from("Forest");
         card.zone = Zone::Battlefield;
+        card.subtypes.insert(CardSubtype::Forest);
         card.abilities.activated.push(ActivatedAbility {
             cost: Cost::Tap(Target::Source),
             effect: Effect::Mana(Mana::from("G")),
@@ -545,6 +546,7 @@ mod tests {
 
         let mut card = Card::new_creature(player_id, CreatureState::new(1, 1));
         card.cost = Cost::Mana("R");
+        card.subtypes.insert(CardSubtype::Spirit);
         card.abilities.activated.push(ActivatedAbility {
             cost: Cost::And(&[Cost::Mana("R"), Cost::Sacrifice(Target::Creature)]),
             effect: Effect::Damage(1),
@@ -556,10 +558,8 @@ mod tests {
         add_mana(&mut game, player_id, Mana::from("R"));
 
         let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();
-        action.choices.cost = Choice::And(vec![
-            Choice::Card(card_id),
-            Choice::Mana(Mana::from("R"))
-        ]);
+        action.choices.cost =
+            Choice::And(vec![Choice::Card(card_id), Choice::Mana(Mana::from("R"))]);
         action.choices.target = Choice::Player(opponent_id);
 
         play_ability(&mut game, card_id, 0, action);
