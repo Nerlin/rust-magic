@@ -33,12 +33,16 @@ pub struct TriggeredAbility {
     pub target: Target,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Cost {
     #[default]
     None,
-    Mana(Mana),
+    Mana(&'static str),
     Tap(Target),
+    Sacrifice(Target),
+
+    // Must pay all
+    And(&'static [Cost]),
 }
 
 #[derive(Clone, Debug)]
@@ -281,9 +285,11 @@ fn resolve_effect(game: &mut Game, effect: Effect, action: Action) {
                 _ => {}
             },
             Effect::Discard(_) => match action.choices.effect {
-                Choice::CardsExact(cards) => {
-                    for card_id in cards.iter() {
-                        put_on_graveyard(game, *card_id);
+                Choice::And(choices) => {
+                    for choice in choices.iter() {
+                        if let Choice::Card(card_id) = choice {
+                            put_on_graveyard(game, *card_id);
+                        }
                     }
                 }
                 _ => {}
@@ -414,7 +420,7 @@ mod tests {
 
         let mut card = Card::new_artifact(player_id);
         card.abilities.activated.push(ActivatedAbility {
-            cost: Cost::Mana(Mana::from("R")),
+            cost: Cost::Mana("R"),
             effect: Effect::Damage(1),
             target: Target::Player,
         });
@@ -446,7 +452,7 @@ mod tests {
         game.turn = Turn::new(player_id);
 
         let mut card = Card::new_sorcery(player_id);
-        card.cost = Cost::Mana(Mana::from("R"));
+        card.cost = Cost::Mana("R");
         card.abilities.played = Some(PlayAbility {
             effect: Effect::Damage(2),
             target: Target::AnyOf(&[Target::Player, Target::Creature]),
@@ -508,7 +514,7 @@ mod tests {
         let opponent_id = game.add_player(Player::new());
 
         let mut card = Card::new_instant(opponent_id);
-        card.cost = Cost::Mana(Mana::from("R"));
+        card.cost = Cost::Mana("R");
         card.abilities.played = Some(PlayAbility {
             effect: Effect::Damage(3),
             target: Target::AnyOf(&[Target::Player, Target::Creature]),
@@ -529,5 +535,40 @@ mod tests {
 
         let player = game.get_player(player_id).unwrap();
         assert_eq!(player.life, 17);
+    }
+
+    #[test]
+    fn test_scorched_rusalka() {
+        let mut game = Game::new();
+        let player_id = game.add_player(Player::new());
+        let opponent_id = game.add_player(Player::new());
+
+        let mut card = Card::new_creature(player_id, CreatureState::new(1, 1));
+        card.cost = Cost::Mana("R");
+        card.abilities.activated.push(ActivatedAbility {
+            cost: Cost::And(&[Cost::Mana("R"), Cost::Sacrifice(Target::Creature)]),
+            effect: Effect::Damage(1),
+            target: Target::Player,
+        });
+        let card_id = game.add_card(card);
+
+        put_on_battlefield(&mut game, card_id);
+        add_mana(&mut game, player_id, Mana::from("R"));
+
+        let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();
+        action.choices.cost = Choice::And(vec![
+            Choice::Card(card_id),
+            Choice::Mana(Mana::from("R"))
+        ]);
+        action.choices.target = Choice::Player(opponent_id);
+
+        play_ability(&mut game, card_id, 0, action);
+        resolve_stack(&mut game);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 19);
+
+        let card = game.get_card(card_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
     }
 }

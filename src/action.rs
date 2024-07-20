@@ -1,6 +1,6 @@
 use crate::{
     abilities::{Cost, Effect, Target},
-    card::{tap_card, CardType},
+    card::{put_on_graveyard, tap_card, CardType, Zone},
     game::{Game, ObjectId},
     mana::Mana,
 };
@@ -50,9 +50,13 @@ impl Action {
     }
 
     pub fn pay(&self, game: &mut Game) -> bool {
-        return match &self.required.cost {
+        self.pay_cost(game, &self.required.cost, &self.choices.cost)
+    }
+
+    fn pay_cost(&self, game: &mut Game, cost: &Cost, choice: &Choice) -> bool {
+        return match &cost {
             Cost::None => true,
-            Cost::Mana(_) => match &self.choices.cost {
+            Cost::Mana(_) => match &choice {
                 Choice::Mana(mana) => {
                     return if let Some(player) = game.get_player(self.player_id) {
                         player.mana -= *mana;
@@ -61,29 +65,60 @@ impl Action {
                         false
                     }
                 }
+                Choice::And(choices) => choices
+                    .iter()
+                    .any(|choice| self.pay_cost(game, cost, choice)),
                 _ => false,
             },
-            Cost::Tap(_) => match &self.choices.cost {
+            Cost::Tap(_) => match &choice {
                 Choice::Card(card_id) => tap_card(game, *card_id, Some(self.card_id)),
+                Choice::And(choices) => choices
+                    .iter()
+                    .any(|choice| self.pay_cost(game, cost, choice)),
                 _ => false,
             },
+            Cost::Sacrifice(_) => match &choice {
+                Choice::Card(card_id) => {
+                    put_on_graveyard(game, *card_id);
+                    true
+                }
+                Choice::And(choices) => choices
+                    .iter()
+                    .any(|choice| self.pay_cost(game, cost, choice)),
+                _ => false,
+            },
+            Cost::And(costs) => costs.iter().all(|cost| self.pay_cost(game, cost, choice)),
         };
     }
 
     pub fn valid(&self, game: &mut Game) -> bool {
-        self.valid_cost()
+        self.valid_cost(game, &self.required.cost)
             && self.valid_target(game, &self.required.target)
             && self.valid_effect(game)
     }
 
-    fn valid_cost(&self) -> bool {
-        return match &self.required.cost {
+    fn valid_cost(&self, game: &mut Game, cost: &Cost) -> bool {
+        return match cost {
             Cost::None => true,
-            Cost::Mana(mana) => self.choices.cost.validate_mana(&mana),
+            Cost::Mana(mana) => self.choices.cost.validate_mana(&Mana::from(*mana)),
             Cost::Tap(target) => match target {
                 Target::Source => self.choices.cost.validate_card(self.card_id),
                 _ => true,
             },
+            Cost::Sacrifice(target) => match target {
+                Target::Source => self.choices.cost.validate_card(self.card_id),
+                Target::Creature => {
+                    if let Some(creature_id) = self.choices.cost.validate_creature(game) {
+                        if let Some(card) = game.get_card(creature_id) {
+                            return card.zone == Zone::Battlefield
+                                && card.owner_id == self.player_id;
+                        }
+                    }
+                    false
+                }
+                _ => false,
+            },
+            Cost::And(costs) => costs.iter().all(|cost| self.valid_cost(game, cost)),
         };
     }
 
@@ -91,9 +126,9 @@ impl Action {
         return match &target {
             Target::None => true,
             Target::Source => self.choices.target.validate_card(self.card_id),
-            Target::Player => self.choices.target.validate_player(),
-            Target::Creature => self.choices.target.validate_creature(game),
-            Target::Owner => self.choices.target.validate_owner(self.player_id),
+            Target::Player => self.choices.target.validate_player(None),
+            Target::Creature => self.choices.target.validate_creature(game).is_some(),
+            Target::Owner => self.choices.target.validate_player(Some(self.player_id)),
             Target::AnyOf(options) => options.iter().any(|option| self.valid_target(game, option)),
         };
     }
@@ -102,14 +137,15 @@ impl Action {
         return match &self.required.effect {
             Effect::Mana(mana) => self.choices.effect.validate_mana(mana),
             Effect::Discard(card_count) => {
-                return if let Choice::CardsExact(cards) = &self.choices.effect {
-                    return cards.len() == *card_count
-                        && cards.iter().all(|card_id| {
-                            if let Some(card) = game.get_card(*card_id) {
-                                card.owner_id == self.player_id
-                            } else {
-                                false
+                return if let Choice::And(choices) = &self.choices.effect {
+                    return choices.len() == *card_count
+                        && choices.iter().all(|choice| {
+                            if let Choice::Card(card_id) = &choice {
+                                if let Some(card) = game.get_card(*card_id) {
+                                    return card.owner_id == self.player_id;
+                                }
                             }
+                            false
                         });
                 } else {
                     false
@@ -140,57 +176,56 @@ pub enum Choice {
     Mana(Mana),
     Player(ObjectId),
     Card(ObjectId),
-    CardsExact(Vec<ObjectId>),
+    And(Vec<Choice>),
 }
 
 impl Choice {
     fn validate_mana(&self, cost: &Mana) -> bool {
-        if let Choice::Mana(mana) = self {
-            if mana.enough(cost) {
-                return true;
-            }
+        match self {
+            Choice::Mana(mana) => mana.enough(cost),
+            Choice::And(choices) => choices.iter().any(|choice| choice.validate_mana(cost)),
+            _ => false,
         }
-        false
     }
 
     fn validate_card(&self, card_id: ObjectId) -> bool {
-        if let Choice::Card(chosen_card) = self {
-            if *chosen_card == card_id {
-                return true;
-            }
+        match self {
+            Choice::Card(chosen_card) => *chosen_card == card_id,
+            Choice::And(choices) => choices.iter().any(|choice| choice.validate_card(card_id)),
+            _ => false,
         }
-        false
     }
 
-    fn validate_player(&self) -> bool {
-        return if let Choice::Player(_) = self {
-            true
-        } else {
-            false
-        };
+    fn validate_player(&self, player_id: Option<ObjectId>) -> bool {
+        match self {
+            Choice::Player(chosen_player) => player_id == None || player_id == Some(*chosen_player),
+            Choice::And(choices) => choices
+                .iter()
+                .any(|choice| choice.validate_player(player_id)),
+            _ => false,
+        }
     }
 
-    fn validate_creature(&self, game: &mut Game) -> bool {
-        if let Choice::Card(card_id) = self {
-            if let Some(card) = game.get_card(*card_id) {
-                if let CardType::Creature(_) = &card.kind {
-                    true
-                } else {
-                    false
+    fn validate_creature(&self, game: &mut Game) -> Option<ObjectId> {
+        match self {
+            Choice::Card(card_id) => {
+                if let Some(card) = game.get_card(*card_id) {
+                    if let CardType::Creature(_) = &card.kind {
+                        return Some(*card_id);
+                    }
                 }
-            } else {
-                false
+                None
             }
-        } else {
-            false
+            Choice::And(choices) => {
+                for choice in choices.iter() {
+                    let card_id = choice.validate_creature(game);
+                    if card_id.is_some() {
+                        return card_id;
+                    }
+                }
+                None
+            }
+            _ => None,
         }
-    }
-
-    fn validate_owner(&self, owner_id: ObjectId) -> bool {
-        return if let Choice::Player(player_id) = self {
-            *player_id == owner_id
-        } else {
-            false
-        };
     }
 }
