@@ -98,7 +98,7 @@ fn run_player_triggers(game: &mut Game, player_id: ObjectId, event: &Event) {
     let battlefield = player.battlefield.clone();
     for card_id in battlefield {
         let triggers = if let Some(card) = game.get_card(card_id) {
-            card.abilities.triggers.clone()
+            card.triggered_abilities.clone()
         } else {
             vec![]
         };

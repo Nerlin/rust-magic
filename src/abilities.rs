@@ -1,20 +1,13 @@
 use crate::{
     action::{Action, Choice},
     card::{put_on_battlefield, put_on_graveyard, put_on_stack, CardType},
-    game::{Game, GameStatus, ObjectId, Stacked},
+    game::{Game, GameStatus, ObjectId, Stacked, Value},
     mana::{Color, Mana},
     turn::Step,
 };
 
-#[derive(Default)]
-pub struct Abilities {
-    pub played: Option<PlayAbility>,
-    pub activated: Vec<ActivatedAbility>,
-    pub triggers: Vec<TriggeredAbility>,
-}
-
 #[derive(Clone, Debug)]
-pub struct PlayAbility {
+pub struct Resolve {
     pub effect: Effect,
     pub target: Target,
 }
@@ -31,6 +24,17 @@ pub struct TriggeredAbility {
     pub condition: Condition,
     pub effect: Effect,
     pub target: Target,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StaticAbility {
+    #[default]
+    None,
+    Haste,
+    Flying,
+    Reach,
+    Vigilance,
+    Defender,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -84,7 +88,7 @@ pub fn create_card_action(
         return None;
     };
 
-    return if let Some(resolve) = &card.abilities.played {
+    return if let Some(resolve) = &card.effect {
         let cost = card.cost.clone();
         let effect = resolve.effect.clone();
         let target = resolve.target.clone();
@@ -178,7 +182,7 @@ pub fn create_ability_action(
         return None;
     };
 
-    match card.abilities.activated.get_mut(ability_id) {
+    match card.activated_abilities.get_mut(ability_id) {
         Some(ability) => {
             let cost = ability.cost.clone();
             let target = ability.target.clone();
@@ -199,7 +203,7 @@ pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, actio
         return;
     };
 
-    let ability = if let Some(ability) = card.abilities.activated.get_mut(ability_id) {
+    let ability = if let Some(ability) = card.activated_abilities.get_mut(ability_id) {
         ability.clone()
     } else {
         return;
@@ -233,8 +237,8 @@ pub fn resolve_stacked(game: &mut Game, stacked: Stacked) {
     match stacked {
         Stacked::Spell { card_id, action } => {
             let played_effect = if let Some(card) = game.get_card(card_id) {
-                if let Some(ability) = &card.abilities.played {
-                    Some(ability.effect.clone())
+                if let Some(resolve) = &card.effect {
+                    Some(resolve.effect.clone())
                 } else {
                     None
                 }
@@ -248,7 +252,7 @@ pub fn resolve_stacked(game: &mut Game, stacked: Stacked) {
 
             if let Some(card) = game.get_card(card_id) {
                 match &card.kind {
-                    CardType::Artifact | CardType::Enchantment | CardType::Creature(_) => {
+                    CardType::Artifact | CardType::Enchantment | CardType::Creature => {
                         put_on_battlefield(game, card_id)
                     }
                     CardType::Instant | CardType::Sorcery => put_on_graveyard(game, card_id),
@@ -318,13 +322,26 @@ pub(crate) fn deal_damage(game: &mut Game, card_id: ObjectId, damage: u16) {
 
     if let Some(card) = game.get_card(card_id) {
         match &mut card.kind {
-            CardType::Creature(creature) => {
-                creature.toughness.current -= damage as i16;
-                if creature.toughness.current <= 0 {
+            CardType::Creature => {
+                card.state.toughness.current -= damage as i16;
+                if card.state.toughness.current <= 0 {
                     put_on_graveyard(game, card_id);
                 }
             }
             _ => {}
+        }
+    }
+}
+
+pub fn apply_static_abilities(game: &mut Game, card_id: ObjectId) {
+    if let Some(card) = game.get_card(card_id) {
+        for ability in card.static_abilities.iter() {
+            match ability {
+                StaticAbility::Haste => {
+                    card.state.motion_sickness = Value::new(false);
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -334,11 +351,11 @@ mod tests {
     use crate::{
         abilities::{
             can_play_card, create_ability_action, create_card_action, play_ability, play_card,
-            resolve_stack, ActivatedAbility, Condition, Cost, Effect, PlayAbility, Target,
+            resolve_stack, ActivatedAbility, Condition, Cost, Effect, Resolve, Target,
             TriggeredAbility,
         },
         action::{Action, Choice},
-        card::{put_in_hand, put_on_battlefield, Card, CardSubtype, CreatureState, Zone},
+        card::{put_in_hand, put_on_battlefield, Card, CardSubtype, Zone},
         game::{add_mana, Game, Player},
         mana::Mana,
         turn::{pass_priority, pass_turn, postcombat_step, precombat_step, upkeep_step, Turn},
@@ -353,7 +370,7 @@ mod tests {
         card.name = String::from("Forest");
         card.zone = Zone::Battlefield;
         card.subtypes.insert(CardSubtype::Forest);
-        card.abilities.activated.push(ActivatedAbility {
+        card.activated_abilities.push(ActivatedAbility {
             cost: Cost::Tap(Target::Source),
             effect: Effect::Mana(Mana::from("G")),
             target: Target::None,
@@ -369,7 +386,7 @@ mod tests {
         assert_eq!(player.mana.green, 1);
 
         let card = game.get_card(card_id).unwrap();
-        assert!(card.tapped);
+        assert!(card.state.tapped.current);
     }
 
     #[test]
@@ -380,14 +397,14 @@ mod tests {
 
         let mut card = Card::new_land(player_id);
         card.name = String::from("City of Brass");
-        card.abilities.activated.push({
+        card.activated_abilities.push({
             ActivatedAbility {
                 cost: Cost::Tap(Target::Source),
                 effect: Effect::Mana(Mana::from("*")),
                 target: Target::None,
             }
         });
-        card.abilities.triggers.push({
+        card.triggered_abilities.push({
             TriggeredAbility {
                 condition: Condition::Tap(Target::Source),
                 effect: Effect::Damage(1),
@@ -420,7 +437,7 @@ mod tests {
         let opponent_id = game.add_player(Player::new());
 
         let mut card = Card::new_artifact(player_id);
-        card.abilities.activated.push(ActivatedAbility {
+        card.activated_abilities.push(ActivatedAbility {
             cost: Cost::Mana("R"),
             effect: Effect::Damage(1),
             target: Target::Player,
@@ -454,14 +471,14 @@ mod tests {
 
         let mut card = Card::new_sorcery(player_id);
         card.cost = Cost::Mana("R");
-        card.abilities.played = Some(PlayAbility {
+        card.effect = Some(Resolve {
             effect: Effect::Damage(2),
             target: Target::AnyOf(&[Target::Player, Target::Creature]),
         });
         let sorcery_id = game.add_card(card);
         put_in_hand(&mut game, sorcery_id);
 
-        let creature_id = game.add_card(Card::new_creature(player_id, CreatureState::new(2, 2)));
+        let creature_id = game.add_card(Card::new_creature(player_id, 2, 2));
         put_on_battlefield(&mut game, creature_id);
         precombat_step(&mut game);
 
@@ -516,7 +533,7 @@ mod tests {
 
         let mut card = Card::new_instant(opponent_id);
         card.cost = Cost::Mana("R");
-        card.abilities.played = Some(PlayAbility {
+        card.effect = Some(Resolve {
             effect: Effect::Damage(3),
             target: Target::AnyOf(&[Target::Player, Target::Creature]),
         });
@@ -544,10 +561,10 @@ mod tests {
         let player_id = game.add_player(Player::new());
         let opponent_id = game.add_player(Player::new());
 
-        let mut card = Card::new_creature(player_id, CreatureState::new(1, 1));
+        let mut card = Card::new_creature(player_id, 1, 1);
         card.cost = Cost::Mana("R");
         card.subtypes.insert(CardSubtype::Spirit);
-        card.abilities.activated.push(ActivatedAbility {
+        card.activated_abilities.push(ActivatedAbility {
             cost: Cost::And(&[Cost::Mana("R"), Cost::Sacrifice(Target::Creature)]),
             effect: Effect::Damage(1),
             target: Target::Player,

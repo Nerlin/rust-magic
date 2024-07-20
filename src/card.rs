@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use crate::{
-    abilities::{Abilities, Cost},
+    abilities::{
+        apply_static_abilities, ActivatedAbility, Cost, Resolve, StaticAbility, TriggeredAbility,
+    },
     events::{dispatch_event, CardEvent, Event},
     game::{Game, ObjectId, Value},
 };
@@ -14,10 +16,16 @@ pub struct Card {
     pub kind: CardType,
     pub subtypes: HashSet<CardSubtype>,
     pub cost: Cost,
-    pub abilities: Abilities,
     pub zone: Zone,
 
-    pub tapped: bool,
+    /// Defines the ability that happens when the card is resolved
+    pub effect: Option<Resolve>,
+
+    pub activated_abilities: Vec<ActivatedAbility>,
+    pub triggered_abilities: Vec<TriggeredAbility>,
+    pub static_abilities: HashSet<StaticAbility>,
+
+    pub state: CardState,
 }
 
 impl Card {
@@ -33,9 +41,11 @@ impl Card {
         card
     }
 
-    pub fn new_creature(owner_id: ObjectId, state: CreatureState) -> Card {
+    pub fn new_creature(owner_id: ObjectId, power: i16, toughness: i16) -> Card {
         let mut card = Card::new(owner_id);
-        card.kind = CardType::Creature(state);
+        card.kind = CardType::Creature;
+        card.state.power = Value::new(power);
+        card.state.toughness = Value::new(toughness);
         card
     }
 
@@ -64,8 +74,8 @@ impl Card {
     }
 
     pub fn tap(&mut self) -> bool {
-        if self.zone == Zone::Battlefield && !self.tapped {
-            self.tapped = true;
+        if self.zone == Zone::Battlefield && !self.state.tapped.current {
+            self.state.tapped.current = true;
             true
         } else {
             false
@@ -73,8 +83,8 @@ impl Card {
     }
 
     pub fn untap(&mut self) -> bool {
-        if self.zone == Zone::Battlefield && self.tapped {
-            self.tapped = false;
+        if self.zone == Zone::Battlefield && self.state.tapped.current {
+            self.state.tapped.current = false;
             true
         } else {
             false
@@ -138,16 +148,13 @@ fn change_zone(game: &mut Game, card_id: ObjectId, zone: Zone) {
     let player_id;
     if let Some(card) = game.get_card(card_id) {
         card.zone = zone.clone();
-        card.tapped = false;
-
-        if let CardType::Creature(creature) = &mut card.kind {
-            creature.reset();
-        }
-
+        card.state.reset();
         player_id = card.owner_id;
     } else {
         return;
     }
+
+    apply_static_abilities(game, card_id);
 
     if let Some(player) = game.get_player(player_id) {
         for (player_zone, cards) in player.zones_mut() {
@@ -177,7 +184,7 @@ pub enum CardType {
     Land,
     Artifact,
     Enchantment,
-    Creature(CreatureState),
+    Creature,
     Instant,
     Sorcery,
 }
@@ -194,21 +201,34 @@ pub enum CardSubtype {
     Island,
 
     Spirit,
+    Dragon,
+    Bird,
+    Human,
+    Spider,
 }
 
 #[derive(Default, PartialEq, PartialOrd)]
-pub struct CreatureState {
+pub struct CardState {
     pub power: Value<i16>,
     pub toughness: Value<i16>,
     pub motion_sickness: Value<bool>,
+    pub tapped: Value<bool>,
 }
 
-impl CreatureState {
-    pub fn new(power: i16, toughness: i16) -> CreatureState {
-        CreatureState {
+impl CardState {
+    pub fn new() -> CardState {
+        let mut state = CardState::default();
+        state.motion_sickness.default = true;
+        state.tapped.default = false;
+        state
+    }
+
+    pub fn new_creature(power: i16, toughness: i16) -> CardState {
+        CardState {
             power: Value::new(power),
             toughness: Value::new(toughness),
             motion_sickness: Value::new(true),
+            tapped: Value::new(false),
         }
     }
 
@@ -223,14 +243,13 @@ impl CreatureState {
         self.power.reset();
         self.toughness.reset();
         self.motion_sickness.reset();
+        self.tapped.reset();
     }
 }
 
 pub fn is_alive(game: &mut Game, card_id: ObjectId) -> bool {
     if let Some(card) = game.get_card(card_id) {
-        if let CardType::Creature(creature) = &card.kind {
-            return creature.toughness.current > 0;
-        }
+        return card.kind == CardType::Creature && card.state.toughness.current > 0;
     }
     false
 }

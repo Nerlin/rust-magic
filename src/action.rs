@@ -210,7 +210,7 @@ impl Choice {
         match self {
             Choice::Card(card_id) => {
                 if let Some(card) = game.get_card(*card_id) {
-                    if let CardType::Creature(_) = &card.kind {
+                    if card.kind == CardType::Creature {
                         return Some(*card_id);
                     }
                 }

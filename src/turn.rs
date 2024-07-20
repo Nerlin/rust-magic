@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    abilities::{deal_player_damage, Effect},
+    abilities::{deal_player_damage, Effect, StaticAbility},
     action::Action,
     card::{is_alive, put_on_graveyard, untap_card, CardType, Zone},
     deck::draw_card,
@@ -121,7 +121,7 @@ pub fn untap_step(game: &mut Game) {
         .filter(|card| {
             card.owner_id == game.turn.active_player
                 && card.zone == Zone::Battlefield
-                && card.tapped
+                && card.state.tapped.current
         })
         .map(|card| card.id)
         .collect();
@@ -129,8 +129,8 @@ pub fn untap_step(game: &mut Game) {
     for card_id in tapped_cards {
         untap_card(game, card_id, None);
         if let Some(card) = game.get_card(card_id) {
-            if let CardType::Creature(creature) = &mut card.kind {
-                creature.motion_sickness.current = false;
+            if card.kind == CardType::Creature {
+                card.state.motion_sickness.current = false;
             }
         }
     }
@@ -179,8 +179,8 @@ pub fn declare_attacker(game: &mut Game, attacker_id: ObjectId, target: ObjectId
     if can_declare_attacker(game, attacker_id) {
         let mut power = 0;
         if let Some(card) = game.get_card(attacker_id) {
-            if let CardType::Creature(creature) = &card.kind {
-                power = creature.power.current;
+            if card.kind == CardType::Creature {
+                power = card.state.power.current;
             }
         }
 
@@ -201,12 +201,16 @@ pub fn can_declare_attacker(game: &mut Game, card_id: ObjectId) -> bool {
     let active_player = game.turn.active_player;
 
     if let Some(card) = game.get_card(card_id) {
-        if card.owner_id != active_player || card.zone != Zone::Battlefield {
+        if card.owner_id != active_player
+            || card.zone != Zone::Battlefield
+            || card.kind != CardType::Creature
+        {
             return false;
         }
-        if let CardType::Creature(creature) = &card.kind {
-            return !card.tapped && !creature.motion_sickness.current;
+        if card.static_abilities.contains(&StaticAbility::Defender) {
+            return false;
         }
+        return !card.state.tapped.current && !card.state.motion_sickness.current;
     }
     false
 }
@@ -214,7 +218,9 @@ pub fn can_declare_attacker(game: &mut Game, card_id: ObjectId) -> bool {
 pub fn declare_attackers_step_end(game: &mut Game) {
     for attacker in game.turn.combat.attackers.clone().keys() {
         if let Some(card) = game.get_card(*attacker) {
-            card.tap();
+            if !card.static_abilities.contains(&StaticAbility::Vigilance) {
+                card.tap();
+            }
         }
     }
 
@@ -248,13 +254,35 @@ pub fn can_declare_blocker(game: &mut Game, blocker_id: ObjectId, attacker_id: O
         return false;
     };
 
-    if let Some(card) = game.get_card(blocker_id) {
-        if card.owner_id != defending_player || card.zone != Zone::Battlefield {
+    let attacker_abilities = if let Some(card) = game.get_card(attacker_id) {
+        card.static_abilities.clone()
+    } else {
+        HashSet::new()
+    };
+
+    if let Some(blocker) = game.get_card(blocker_id) {
+        if blocker.owner_id != defending_player
+            || blocker.zone != Zone::Battlefield
+            || blocker.kind != CardType::Creature
+        {
             return false;
         }
-        if let CardType::Creature(_) = &card.kind {
-            return !card.tapped;
+
+        for ability in attacker_abilities.iter() {
+            match ability {
+                StaticAbility::Flying => {
+                    // Flying creatures can only be blocked by other flying creatures
+                    // or by creatures with reach
+                    if !blocker.static_abilities.contains(&StaticAbility::Flying)
+                        && !blocker.static_abilities.contains(&StaticAbility::Reach)
+                    {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
         }
+        return true;
     }
     false
 }
@@ -286,8 +314,8 @@ pub fn combat_damage_step_start(game: &mut Game) {
 
             let mut damage = 0;
             if let Some(blocker) = game.get_card(*blocker_id) {
-                if let CardType::Creature(creature) = &blocker.kind {
-                    damage = cmp::min(creature.toughness.current, damage_left);
+                if blocker.kind == CardType::Creature {
+                    damage = cmp::min(blocker.state.toughness.current, damage_left);
                 }
             }
 
@@ -332,8 +360,8 @@ pub fn is_combat_damage_assigned(game: &mut Game) -> bool {
         let mut max_assigned = 0;
         for (blocker_id, damage) in attacker.damage.iter() {
             if let Some(blocker) = game.get_card(*blocker_id) {
-                if let CardType::Creature(creature) = &blocker.kind {
-                    max_assigned += creature.toughness.current;
+                if blocker.kind == CardType::Creature {
+                    max_assigned += blocker.state.toughness.current;
                 }
             }
             total_assigned += damage;
@@ -362,16 +390,16 @@ pub fn combat_damage_step_end(game: &mut Game) {
             let mut damage_taken = 0;
 
             if let Some(card) = game.get_card(*blocker) {
-                if let CardType::Creature(creature) = &mut card.kind {
-                    damage_taken = creature.power.current;
-                    creature.toughness.current -= damage_dealt;
+                if card.kind == CardType::Creature {
+                    damage_taken = card.state.power.current;
+                    card.state.toughness.current -= damage_dealt;
                 }
             }
 
             // Attacker takes damage.
             if let Some(card) = game.get_card(attacker.id) {
-                if let CardType::Creature(creature) = &mut card.kind {
-                    creature.toughness.current -= damage_taken;
+                if card.kind == CardType::Creature {
+                    card.state.toughness.current -= damage_taken;
                 }
             }
         }
@@ -415,8 +443,8 @@ pub fn cleanup_step(game: &mut Game) -> Option<Action> {
     game.turn.step = Step::Cleanup;
 
     for card in game.cards.values_mut() {
-        if let CardType::Creature(creature) = &mut card.kind {
-            creature.restore();
+        if card.kind == CardType::Creature {
+            card.state.restore();
         }
     }
 
@@ -465,11 +493,12 @@ fn change_step(game: &mut Game, phase: Step) {
 #[cfg(test)]
 mod tests {
     use crate::{
-        card::{put_on_battlefield, Card, CardType, CreatureState, Zone},
+        abilities::StaticAbility,
+        card::{put_on_battlefield, Card, CardSubtype, Zone},
         game::{Game, Player},
         turn::{
-            all_passed, assign_combat_damage, combat_damage_step_start, declare_blocker,
-            is_combat_damage_assigned, Turn,
+            all_passed, assign_combat_damage, can_declare_attacker, can_declare_blocker,
+            combat_damage_step_start, declare_blocker, is_combat_damage_assigned, Turn,
         },
     };
 
@@ -512,11 +541,9 @@ mod tests {
         let opponent_id = game.add_player(Player::new());
         game.turn = Turn::new(player_id);
 
-        let mut creature_state = CreatureState::new(3, 1);
-        creature_state.motion_sickness.default = false;
+        let mut card = Card::new_creature(player_id, 3, 1);
+        card.static_abilities.insert(StaticAbility::Haste);
 
-        let mut card = Card::new(player_id);
-        card.kind = CardType::Creature(creature_state);
         let attacker_id = game.add_card(card);
 
         put_on_battlefield(&mut game, attacker_id);
@@ -528,7 +555,7 @@ mod tests {
         combat_damage_step_end(&mut game);
 
         let card = game.get_card(attacker_id).unwrap();
-        assert!(card.tapped);
+        assert!(card.state.tapped.current);
 
         let opponent = game.get_player(opponent_id).unwrap();
         assert_eq!(opponent.life, 17);
@@ -541,17 +568,13 @@ mod tests {
         let opponent_id = game.add_player(Player::new());
         game.turn = Turn::new(player_id);
 
-        let mut creature_state = CreatureState::new(3, 1);
-        creature_state.motion_sickness.default = false;
+        let mut card = Card::new_creature(player_id, 3, 1);
+        card.static_abilities.insert(StaticAbility::Haste);
 
-        let mut card = Card::new(player_id);
-        card.kind = CardType::Creature(creature_state);
         let attacker_id = game.add_card(card);
         put_on_battlefield(&mut game, attacker_id);
 
-        let mut card = Card::new(opponent_id);
-        card.kind = CardType::Creature(CreatureState::new(2, 2));
-        let blocker_id = game.add_card(card);
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 2, 2));
         put_on_battlefield(&mut game, blocker_id);
 
         declare_attackers_step_start(&mut game);
@@ -580,22 +603,16 @@ mod tests {
         let opponent_id = game.add_player(Player::new());
         game.turn = Turn::new(player_id);
 
-        let mut creature_state = CreatureState::new(5, 3);
-        creature_state.motion_sickness.default = false;
+        let mut card = Card::new_creature(player_id, 5, 3);
+        card.static_abilities.insert(StaticAbility::Haste);
 
-        let mut card = Card::new(player_id);
-        card.kind = CardType::Creature(creature_state);
         let attacker_id = game.add_card(card);
         put_on_battlefield(&mut game, attacker_id);
 
-        let mut card = Card::new(opponent_id);
-        card.kind = CardType::Creature(CreatureState::new(1, 2));
-        let blocker_one = game.add_card(card);
+        let blocker_one = game.add_card(Card::new_creature(opponent_id, 1, 2));
         put_on_battlefield(&mut game, blocker_one);
 
-        let mut card = Card::new(opponent_id);
-        card.kind = CardType::Creature(CreatureState::new(2, 2));
-        let blocker_two = game.add_card(card);
+        let blocker_two = game.add_card(Card::new_creature(opponent_id, 2, 2));
         put_on_battlefield(&mut game, blocker_two);
 
         declare_attackers_step_start(&mut game);
@@ -628,22 +645,15 @@ mod tests {
         let opponent_id = game.add_player(Player::new());
         game.turn = Turn::new(player_id);
 
-        let mut creature_state = CreatureState::new(2, 1);
-        creature_state.motion_sickness.default = false;
-
-        let mut card = Card::new(player_id);
-        card.kind = CardType::Creature(creature_state);
+        let mut card = Card::new_creature(player_id, 2, 1);
+        card.static_abilities.insert(StaticAbility::Haste);
         let attacker_id = game.add_card(card);
         put_on_battlefield(&mut game, attacker_id);
 
-        let mut card = Card::new(opponent_id);
-        card.kind = CardType::Creature(CreatureState::new(1, 3));
-        let blocker_one = game.add_card(card);
+        let blocker_one = game.add_card(Card::new_creature(opponent_id, 1, 3));
         put_on_battlefield(&mut game, blocker_one);
 
-        let mut card = Card::new(opponent_id);
-        card.kind = CardType::Creature(CreatureState::new(1, 1));
-        let blocker_two = game.add_card(card);
+        let blocker_two = game.add_card(Card::new_creature(opponent_id, 1, 1));
         put_on_battlefield(&mut game, blocker_two);
 
         declare_attackers_step_start(&mut game);
@@ -662,12 +672,8 @@ mod tests {
         assert!(attacker.zone == Zone::Graveyard);
 
         let blocker = game.get_card(blocker_one).unwrap();
-        assert!(blocker.zone == Zone::Battlefield);
-        if let CardType::Creature(creature) = &blocker.kind {
-            assert_eq!(creature.toughness.current, 2);
-        } else {
-            panic!();
-        }
+        assert_eq!(blocker.zone, Zone::Battlefield);
+        assert_eq!(blocker.state.toughness.current, 2);
 
         let blocker = game.get_card(blocker_two).unwrap();
         assert!(blocker.zone == Zone::Graveyard);
@@ -680,17 +686,12 @@ mod tests {
         let opponent_id = game.add_player(Player::new());
         game.turn = Turn::new(player_id);
 
-        let mut creature_state = CreatureState::new(2, 2);
-        creature_state.motion_sickness.default = false;
-
-        let mut card = Card::new(player_id);
-        card.kind = CardType::Creature(creature_state);
+        let mut card = Card::new_creature(player_id, 2, 2);
+        card.static_abilities.insert(StaticAbility::Haste);
         let attacker_id = game.add_card(card);
         put_on_battlefield(&mut game, attacker_id);
 
-        let mut card = Card::new(opponent_id);
-        card.kind = CardType::Creature(CreatureState::new(1, 3));
-        let blocker_id = game.add_card(card);
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 1, 3));
         put_on_battlefield(&mut game, blocker_id);
 
         declare_attackers_step_start(&mut game);
@@ -716,5 +717,84 @@ mod tests {
         // Assign less damage than the creature can deal
         assert!(assign_combat_damage(&mut game, attacker_id, blocker_id, 0));
         assert!(!is_combat_damage_assigned(&mut game));
+    }
+
+    #[test]
+    fn test_flying() {
+        let mut game = Game::new();
+        let player_id = game.add_player(Player::new());
+        let opponent_id = game.add_player(Player::new());
+        game.turn = Turn::new(player_id);
+
+        let mut card = Card::new_creature(player_id, 2, 2);
+        card.subtypes.insert(CardSubtype::Dragon);
+        card.static_abilities.insert(StaticAbility::Flying);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let mut card = Card::new_creature(opponent_id, 1, 1);
+        card.subtypes.insert(CardSubtype::Human);
+        let human_id = game.add_card(card);
+        put_on_battlefield(&mut game, human_id);
+
+        let mut card = Card::new_creature(opponent_id, 2, 2);
+        card.subtypes.insert(CardSubtype::Spider);
+        card.static_abilities.insert(StaticAbility::Reach);
+        let spider_id = game.add_card(card);
+        put_on_battlefield(&mut game, spider_id);
+
+        let mut card = Card::new_creature(opponent_id, 1, 1);
+        card.subtypes.insert(CardSubtype::Bird);
+        card.static_abilities.insert(StaticAbility::Flying);
+        let bird_id = game.add_card(card);
+        put_on_battlefield(&mut game, bird_id);
+
+        declare_attackers_step_start(&mut game);
+        declare_attacker(&mut game, attacker_id, opponent_id);
+        declare_attackers_step_end(&mut game);
+        declare_blockers_step_start(&mut game);
+
+        assert!(can_declare_blocker(&mut game, spider_id, attacker_id));
+        assert!(can_declare_blocker(&mut game, bird_id, attacker_id));
+        assert!(!can_declare_blocker(&mut game, human_id, attacker_id));
+    }
+
+    #[test]
+    fn test_vigilance() {
+        let mut game = Game::new();
+        let player_id = game.add_player(Player::new());
+        let opponent_id = game.add_player(Player::new());
+        game.turn = Turn::new(player_id);
+
+        let mut card = Card::new_creature(player_id, 1, 1);
+        card.subtypes.insert(CardSubtype::Human);
+        card.static_abilities.insert(StaticAbility::Vigilance);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        declare_attackers_step_start(&mut game);
+        declare_attacker(&mut game, attacker_id, opponent_id);
+        declare_attackers_step_end(&mut game);
+
+        let attacker = game.get_card(attacker_id).unwrap();
+        assert!(!attacker.state.tapped.current);
+    }
+
+    #[test]
+    fn test_defender() {
+        let mut game = Game::new();
+        let player_id = game.add_player(Player::new());
+        game.turn = Turn::new(player_id);
+
+        let mut card = Card::new_creature(player_id, 0, 4);
+        card.subtypes.insert(CardSubtype::Spirit);
+        card.static_abilities.insert(StaticAbility::Defender);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        assert!(!can_declare_attacker(&mut game, attacker_id));
     }
 }
