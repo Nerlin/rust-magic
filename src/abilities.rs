@@ -63,6 +63,7 @@ pub enum Target {
     Source,
     Owner,
     Player,
+    Creature,
 }
 
 pub fn create_card_action(
@@ -309,7 +310,7 @@ mod tests {
         card::{put_in_hand, put_on_battlefield, Card, Zone},
         game::{add_mana, Game, GameStatus, Player},
         mana::Mana,
-        turn::{pass_priority, pass_turn, postcombat_phase, precombat_phase, upkeep_phase, Turn},
+        turn::{pass_priority, pass_turn, postcombat_step, precombat_step, upkeep_step, Turn},
     };
 
     use super::{create_card_action, play_card, PlayAbility};
@@ -433,7 +434,7 @@ mod tests {
         let card_id = game.add_card(Card::new_land(player_id));
 
         pass_turn(&mut game);
-        precombat_phase(&mut game);
+        precombat_step(&mut game);
         put_in_hand(&mut game, card_id);
         play_card(&mut game, card_id, Action::new(player_id, card_id));
 
@@ -448,7 +449,7 @@ mod tests {
         let card_id = game.add_card(Card::new_land(player_id));
 
         pass_turn(&mut game);
-        postcombat_phase(&mut game);
+        postcombat_step(&mut game);
         put_in_hand(&mut game, card_id);
         play_card(&mut game, card_id, Action::new(player_id, card_id));
 
@@ -470,7 +471,7 @@ mod tests {
         let card_id = game.add_card(card);
 
         pass_turn(&mut game);
-        upkeep_phase(&mut game);
+        upkeep_step(&mut game);
         pass_priority(&mut game);
         add_mana(&mut game, opponent_id, Mana::from("RRR"));
 

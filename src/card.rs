@@ -208,3 +208,12 @@ impl CreatureState {
         self.motion_sickness.reset();
     }
 }
+
+pub fn is_alive(game: &mut Game, card_id: ObjectId) -> bool {
+    if let Some(card) = game.get_card(card_id) {
+        if let CardType::Creature(creature) = &card.kind {
+            return creature.toughness.current > 0;
+        }
+    }
+    false
+}

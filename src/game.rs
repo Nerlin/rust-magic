@@ -161,7 +161,7 @@ impl Player {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
 pub struct Value<T: Clone + Copy + Default + PartialEq + PartialOrd> {
     pub current: T,
     pub default: T,

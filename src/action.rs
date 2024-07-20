@@ -1,6 +1,6 @@
 use crate::{
     abilities::{Cost, Effect, Target},
-    card::tap_card,
+    card::{tap_card, CardType},
     game::{Game, ObjectId},
     mana::Mana,
 };
@@ -71,7 +71,7 @@ impl Action {
     }
 
     pub fn valid(&self, game: &mut Game) -> bool {
-        self.valid_cost() && self.valid_target() && self.valid_effect(game)
+        self.valid_cost() && self.valid_target(game) && self.valid_effect(game)
     }
 
     fn valid_cost(&self) -> bool {
@@ -85,11 +85,12 @@ impl Action {
         };
     }
 
-    fn valid_target(&self) -> bool {
+    fn valid_target(&self, game: &mut Game) -> bool {
         return match &self.required.target {
             Target::None => true,
             Target::Source => self.choices.target.validate_card(self.card_id),
             Target::Player => self.choices.target.validate_player(),
+            Target::Creature => self.choices.target.validate_creature(game),
             Target::Owner => self.choices.target.validate_owner(self.player_id),
         };
     }
@@ -164,6 +165,22 @@ impl Choice {
         } else {
             false
         };
+    }
+
+    fn validate_creature(&self, game: &mut Game) -> bool {
+        if let Choice::Card(card_id) = self {
+            if let Some(card) = game.get_card(*card_id) {
+                if let CardType::Creature(_) = &card.kind {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     }
 
     fn validate_owner(&self, owner_id: ObjectId) -> bool {
