@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    abilities::{take_damage, Effect},
+    abilities::{deal_player_damage, Effect},
     action::Action,
     card::{is_alive, put_on_graveyard, untap_card, CardType, Zone},
     deck::draw_card,
@@ -378,7 +378,7 @@ pub fn combat_damage_step_end(game: &mut Game) {
 
         if !blocked {
             // Attacker is not blocked, the defending player takes damage.
-            take_damage(game, attacker.target, attacker.power.default as u16);
+            deal_player_damage(game, attacker.target, attacker.power.default as u16);
         }
     }
 

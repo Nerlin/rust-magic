@@ -33,7 +33,7 @@ pub struct TriggeredAbility {
     pub target: Target,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Cost {
     #[default]
     None,
@@ -49,7 +49,7 @@ pub enum Effect {
     Discard(usize),
 }
 
-#[derive(Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Condition {
     Tap(Target),
     Untap(Target),
@@ -57,13 +57,16 @@ pub enum Condition {
     Phase(Step),
 }
 
-#[derive(Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
     None,
     Source,
     Owner,
     Player,
     Creature,
+
+    // Defines that any of the specified targets can be selected
+    AnyOf(&'static [Target]),
 }
 
 pub fn create_card_action(
@@ -270,7 +273,10 @@ fn resolve_effect(game: &mut Game, effect: Effect, action: Action) {
             }
             Effect::Damage(damage) => match action.choices.target {
                 Choice::Player(player_id) => {
-                    take_damage(game, player_id, damage);
+                    deal_player_damage(game, player_id, damage);
+                }
+                Choice::Card(card_id) => {
+                    deal_damage(game, card_id, damage);
                 }
                 _ => {}
             },
@@ -286,15 +292,33 @@ fn resolve_effect(game: &mut Game, effect: Effect, action: Action) {
     }
 }
 
-pub(crate) fn take_damage(game: &mut Game, player_id: ObjectId, damage: u16) {
+pub(crate) fn deal_player_damage(game: &mut Game, player_id: ObjectId, damage: u16) {
     if damage == 0 {
         return;
     }
 
     if let Some(player) = game.get_player(player_id) {
-        player.life = player.life.saturating_sub(damage as i16);
+        player.life -= damage as i16;
         if player.life <= 0 {
             game.status = GameStatus::Lose(player_id);
+        }
+    }
+}
+
+pub(crate) fn deal_damage(game: &mut Game, card_id: ObjectId, damage: u16) {
+    if damage == 0 {
+        return;
+    }
+
+    if let Some(card) = game.get_card(card_id) {
+        match &mut card.kind {
+            CardType::Creature(creature) => {
+                creature.toughness.current -= damage as i16;
+                if creature.toughness.current <= 0 {
+                    put_on_graveyard(game, card_id);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -303,20 +327,19 @@ pub(crate) fn take_damage(game: &mut Game, player_id: ObjectId, damage: u16) {
 mod tests {
     use crate::{
         abilities::{
-            can_play_card, create_ability_action, play_ability, resolve_stack, take_damage,
-            ActivatedAbility, Condition, Cost, Effect, Target, TriggeredAbility,
+            can_play_card, create_ability_action, create_card_action, play_ability, play_card,
+            resolve_stack, ActivatedAbility, Condition, Cost, Effect, PlayAbility, Target,
+            TriggeredAbility,
         },
         action::{Action, Choice},
-        card::{put_in_hand, put_on_battlefield, Card, Zone},
-        game::{add_mana, Game, GameStatus, Player},
+        card::{put_in_hand, put_on_battlefield, Card, CreatureState, Zone},
+        game::{add_mana, Game, Player},
         mana::Mana,
         turn::{pass_priority, pass_turn, postcombat_step, precombat_step, upkeep_step, Turn},
     };
 
-    use super::{create_card_action, play_card, PlayAbility};
-
     #[test]
-    fn test_basic_land() {
+    fn test_mana_ability() {
         let mut game = Game::new();
         let player_id = game.add_player(Player::new());
 
@@ -343,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn test_city_of_brass() {
+    fn test_mana_ability_with_trigger() {
         let mut game = Game::new();
         let player_id = game.add_player(Player::new());
         game.turn = Turn::new(player_id);
@@ -414,17 +437,39 @@ mod tests {
     }
 
     #[test]
-    fn test_lethal_damage() {
+    fn test_activate_ability_any_of_target_creature() {
         let mut game = Game::new();
         let mut player = Player::new();
-        player.life = 3;
+        player.mana.red = 1;
 
         let player_id = game.add_player(player);
-        take_damage(&mut game, player_id, 3);
+        game.turn = Turn::new(player_id);
 
-        let player = game.get_player(player_id).unwrap();
-        assert_eq!(player.life, 0);
-        assert_eq!(game.status, GameStatus::Lose(player_id));
+        let mut card = Card::new_sorcery(player_id);
+        card.cost = Cost::Mana(Mana::from("R"));
+        card.abilities.played = Some(PlayAbility {
+            effect: Effect::Damage(2),
+            target: Target::AnyOf(&[Target::Player, Target::Creature]),
+        });
+        let sorcery_id = game.add_card(card);
+        put_in_hand(&mut game, sorcery_id);
+
+        let creature_id = game.add_card(Card::new_creature(player_id, CreatureState::new(2, 2)));
+        put_on_battlefield(&mut game, creature_id);
+        precombat_step(&mut game);
+
+        let mut action = create_card_action(&mut game, player_id, sorcery_id).unwrap();
+        action.choices.cost = Choice::Mana(Mana::from("R"));
+        action.choices.target = Choice::Card(creature_id);
+
+        play_card(&mut game, sorcery_id, action);
+        resolve_stack(&mut game);
+
+        let card = game.get_card(sorcery_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let creature = game.get_card(creature_id).unwrap();
+        assert_eq!(creature.zone, Zone::Graveyard);
     }
 
     #[test]
@@ -466,7 +511,7 @@ mod tests {
         card.cost = Cost::Mana(Mana::from("R"));
         card.abilities.played = Some(PlayAbility {
             effect: Effect::Damage(3),
-            target: Target::Player,
+            target: Target::AnyOf(&[Target::Player, Target::Creature]),
         });
         let card_id = game.add_card(card);
 

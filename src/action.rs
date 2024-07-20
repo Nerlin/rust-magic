@@ -71,7 +71,9 @@ impl Action {
     }
 
     pub fn valid(&self, game: &mut Game) -> bool {
-        self.valid_cost() && self.valid_target(game) && self.valid_effect(game)
+        self.valid_cost()
+            && self.valid_target(game, &self.required.target)
+            && self.valid_effect(game)
     }
 
     fn valid_cost(&self) -> bool {
@@ -85,13 +87,14 @@ impl Action {
         };
     }
 
-    fn valid_target(&self, game: &mut Game) -> bool {
-        return match &self.required.target {
+    fn valid_target(&self, game: &mut Game, target: &Target) -> bool {
+        return match &target {
             Target::None => true,
             Target::Source => self.choices.target.validate_card(self.card_id),
             Target::Player => self.choices.target.validate_player(),
             Target::Creature => self.choices.target.validate_creature(game),
             Target::Owner => self.choices.target.validate_owner(self.player_id),
+            Target::AnyOf(options) => options.iter().any(|option| self.valid_target(game, option)),
         };
     }
 

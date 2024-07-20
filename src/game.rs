@@ -194,3 +194,25 @@ pub fn add_mana(game: &mut Game, player_id: ObjectId, mana: Mana) {
         player.mana += mana;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        abilities::deal_player_damage,
+        game::{Game, GameStatus, Player},
+    };
+
+    #[test]
+    fn test_lethal_damage() {
+        let mut game = Game::new();
+        let mut player = Player::new();
+        player.life = 3;
+
+        let player_id = game.add_player(player);
+        deal_player_damage(&mut game, player_id, 3);
+
+        let player = game.get_player(player_id).unwrap();
+        assert_eq!(player.life, 0);
+        assert_eq!(game.status, GameStatus::Lose(player_id));
+    }
+}
