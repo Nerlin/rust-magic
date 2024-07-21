@@ -1,7 +1,6 @@
-use std::{
-    cmp,
-    collections::{HashMap, HashSet},
-};
+use std::cmp;
+
+use indexmap::{IndexMap, IndexSet};
 
 use crate::{
     abilities::{deal_player_damage, Effect, StaticAbility},
@@ -35,14 +34,14 @@ impl Turn {
 #[derive(Default)]
 pub struct Priority {
     pub player_id: ObjectId,
-    passes: HashSet<ObjectId>,
+    passes: IndexSet<ObjectId>,
 }
 
 impl Priority {
     pub fn new(active_player: ObjectId) -> Priority {
         Priority {
             player_id: active_player,
-            passes: HashSet::new(),
+            passes: IndexSet::new(),
         }
     }
 
@@ -84,10 +83,25 @@ impl Step {
 
 #[derive(Clone)]
 pub struct Combat {
-    pub attackers: HashMap<ObjectId, Attacker>,
+    pub attackers: IndexMap<ObjectId, Attacker>,
+    blockers_toughness: IndexMap<ObjectId, i16>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AttackType {
+    #[default]
+    Regular,
+    FirstStrike,
 }
 
 impl Combat {
+    pub fn new() -> Combat {
+        Combat {
+            attackers: IndexMap::new(),
+            blockers_toughness: IndexMap::new(),
+        }
+    }
+
     pub fn get_attackers(&self) -> Vec<ObjectId> {
         self.attackers.keys().cloned().collect()
     }
@@ -99,22 +113,35 @@ impl Combat {
             .flatten()
             .collect()
     }
+
+    pub fn get_combatants(&self) -> Vec<ObjectId> {
+        self.get_attackers()
+            .into_iter()
+            .chain(self.get_blockers())
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Attacker {
     pub id: ObjectId,
     pub target: ObjectId,
-    pub power: Value<i16>,
-    pub damage: HashMap<ObjectId, i16>,
-    pub blockers: HashSet<ObjectId>,
+    pub attacks: IndexMap<AttackType, Attack>,
+    pub blockers: IndexSet<ObjectId>,
     pub blocked: bool,
 }
 
-impl Combat {
-    pub fn new() -> Combat {
-        Combat {
-            attackers: HashMap::new(),
+#[derive(Clone, Debug, Default)]
+pub struct Attack {
+    pub power: Value<i16>,
+    pub assignments: IndexMap<ObjectId, i16>,
+}
+
+impl Attack {
+    pub fn new(power: i16) -> Attack {
+        Attack {
+            power: Value::new(power),
+            assignments: IndexMap::new(),
         }
     }
 }
@@ -193,11 +220,21 @@ pub fn declare_attackers_step_start(game: &mut Game) {
 
 pub fn declare_attacker(game: &mut Game, attacker_id: ObjectId, target: ObjectId) {
     if can_declare_attacker(game, attacker_id) {
-        let mut power = 0;
+        let mut attacks: IndexMap<AttackType, Attack>;
         if let Some(card) = game.get_card(attacker_id) {
-            if card.kind == CardType::Creature {
-                power = card.state.power.current;
+            attacks = IndexMap::new();
+
+            let power = card.state.power.current;
+            if card.static_abilities.contains(&StaticAbility::FirstStrike) {
+                attacks.insert(AttackType::FirstStrike, Attack::new(power));
+            } else if card.static_abilities.contains(&StaticAbility::DoubleStrike) {
+                attacks.insert(AttackType::FirstStrike, Attack::new(power));
+                attacks.insert(AttackType::Regular, Attack::new(power));
+            } else {
+                attacks.insert(AttackType::Regular, Attack::new(power));
             }
+        } else {
+            return;
         }
 
         game.turn.combat.attackers.insert(
@@ -205,13 +242,36 @@ pub fn declare_attacker(game: &mut Game, attacker_id: ObjectId, target: ObjectId
             Attacker {
                 id: attacker_id,
                 target,
-                power: Value::new(power),
-                damage: HashMap::new(),
-                blockers: HashSet::new(),
+                attacks,
+                blockers: IndexSet::new(),
                 blocked: false,
             },
         );
     }
+}
+
+/// Declares the specified attacker and blocker, automatically assigns combat damage and
+/// runs the combat damage step.
+pub fn fast_combat(game: &mut Game, attacker_id: ObjectId, blocker_ids: &[ObjectId]) {
+    fast_declare_attacker(game, attacker_id);
+    fast_declare_blockers(game, blocker_ids, attacker_id);
+    combat_damage_step_start(game);
+    combat_damage_step_end(game);
+}
+
+pub fn fast_declare_attacker(game: &mut Game, attacker_id: ObjectId) {
+    let opponent_id = game.get_next_player(game.turn.active_player);
+    declare_attackers_step_start(game);
+    declare_attacker(game, attacker_id, opponent_id);
+    declare_attackers_step_end(game);
+}
+
+pub fn fast_declare_blockers(game: &mut Game, blocker_ids: &[ObjectId], attacker_id: ObjectId) {
+    declare_blockers_step_start(game);
+    for blocker_id in blocker_ids {
+        declare_blocker(game, *blocker_id, attacker_id);
+    }
+    declare_blockers_step_end(game);
 }
 
 pub fn can_declare_attacker(game: &mut Game, card_id: ObjectId) -> bool {
@@ -274,7 +334,7 @@ pub fn can_declare_blocker(game: &mut Game, blocker_id: ObjectId, attacker_id: O
     let attacker_abilities = if let Some(card) = game.get_card(attacker_id) {
         card.static_abilities.clone()
     } else {
-        HashSet::new()
+        IndexSet::new()
     };
 
     if let Some(blocker) = game.get_card(blocker_id) {
@@ -318,29 +378,81 @@ pub fn declare_blockers_step_end(game: &mut Game) {
 pub fn combat_damage_step_start(game: &mut Game) {
     game.turn.step = Step::CombatDamage;
 
+    set_blockers_toughness(game);
+
     let attackers = game.turn.combat.attackers.clone();
-    for attacker in attackers.values() {
-        // Distribute combat damage automatically
-        let mut damage_left = attacker.power.default;
+    for attack_type in &[AttackType::FirstStrike, AttackType::Regular] {
+        for attacker in attackers.values() {
+            if let Some(attack) = attacker.attacks.get(attack_type) {
+                // Distribute combat damage automatically
+                let mut damage_left = attack.power.default;
 
-        let attacker_id = attacker.id;
-        for blocker_id in attacker.blockers.iter() {
-            if damage_left <= 0 {
-                break;
-            }
+                let attacker_id = attacker.id;
+                for blocker_id in attacker.blockers.iter() {
+                    if damage_left <= 0 {
+                        break;
+                    }
 
-            let mut damage = 0;
-            if let Some(blocker) = game.get_card(*blocker_id) {
-                if blocker.kind == CardType::Creature {
-                    damage = cmp::min(blocker.state.toughness.current, damage_left);
+                    let toughness = *game
+                        .turn
+                        .combat
+                        .blockers_toughness
+                        .get(blocker_id)
+                        .unwrap_or(&0);
+
+                    let damage = cmp::min(toughness, damage_left);
+                    game.turn
+                        .combat
+                        .blockers_toughness
+                        .insert(*blocker_id, toughness - damage);
+
+                    if let Some(attacker) = game.turn.combat.attackers.get_mut(&attacker_id) {
+                        let attack = attacker.attacks.get_mut(attack_type).unwrap();
+                        attack.assignments.insert(*blocker_id, damage);
+                        damage_left = damage_left.saturating_sub(damage);
+                        attack.power.current = damage_left;
+                    }
                 }
             }
+        }
+    }
+}
 
-            if let Some(attacker) = game.turn.combat.attackers.get_mut(&attacker_id) {
-                attacker.damage.insert(*blocker_id, damage);
-                damage_left = damage_left.saturating_sub(damage);
-                attacker.power.current = damage_left;
+fn set_blockers_toughness(game: &mut Game) {
+    let attackers = game.turn.combat.attackers.clone();
+    for attacker in attackers.values() {
+        for blocker_id in attacker.blockers.iter() {
+            let toughness = if let Some(blocker) = game.get_card(*blocker_id) {
+                blocker.state.toughness.current
+            } else {
+                0
+            };
+            game.turn
+                .combat
+                .blockers_toughness
+                .insert(*blocker_id, toughness);
+        }
+    }
+}
+
+pub fn reset_combat_assignments(game: &mut Game, attacker_id: ObjectId) {
+    if let Some(attacker) = game.turn.combat.attackers.get_mut(&attacker_id) {
+        for attack in attacker.attacks.values_mut() {
+            attack.power.reset();
+
+            for (blocker, damage) in attack.assignments.iter() {
+                let toughness = game
+                    .turn
+                    .combat
+                    .blockers_toughness
+                    .get(blocker)
+                    .unwrap_or(&0);
+                game.turn
+                    .combat
+                    .blockers_toughness
+                    .insert(*blocker, toughness + damage);
             }
+            attack.assignments.clear();
         }
     }
 }
@@ -349,22 +461,56 @@ pub fn assign_combat_damage(
     game: &mut Game,
     attacker_id: ObjectId,
     blocker_id: ObjectId,
+    attack_type: AttackType,
     damage: i16,
 ) -> bool {
     if damage < 0 {
         return false;
     }
+
+    let toughness = *game
+        .turn
+        .combat
+        .blockers_toughness
+        .get(&blocker_id)
+        .unwrap_or(&0);
+    if damage > toughness {
+        return false;
+    }
+
     if let Some(attacker) = game.turn.combat.attackers.get_mut(&attacker_id) {
-        let current = attacker.damage.get(&blocker_id).unwrap_or(&0);
-        let diff = current - damage;
-        if diff < 0 && attacker.power.current >= -diff {
-            attacker.power.current -= diff;
-            attacker.damage.insert(blocker_id, damage);
-            return true;
-        } else if diff > 0 {
-            attacker.power.current += diff;
-            attacker.damage.insert(blocker_id, damage);
-            return true;
+        if let Some(attack) = attacker.attacks.get_mut(&attack_type) {
+            let current = *attack.assignments.get(&blocker_id).unwrap_or(&0);
+            if attack.power.current == attack.power.default {
+                attack.power.current -= damage;
+                attack.assignments.insert(blocker_id, damage);
+                game.turn
+                    .combat
+                    .blockers_toughness
+                    .insert(blocker_id, toughness - damage);
+                return true;
+            } else {
+                let diff = current - damage;
+                if diff < 0 && attack.power.current >= -diff {
+                    attack.power.current -= diff;
+                    attack.assignments.insert(blocker_id, damage);
+                    game.turn
+                        .combat
+                        .blockers_toughness
+                        .insert(blocker_id, toughness - diff);
+                    return true;
+                } else if diff > 0 {
+                    attack.power.current += diff;
+                    attack.assignments.insert(blocker_id, damage);
+                    game.turn
+                        .combat
+                        .blockers_toughness
+                        .insert(blocker_id, toughness + diff);
+                    return true;
+                }
+            }
+        } else {
+            return false;
         }
     }
     false
@@ -372,21 +518,32 @@ pub fn assign_combat_damage(
 
 pub fn is_combat_damage_assigned(game: &mut Game) -> bool {
     let attackers = game.turn.combat.attackers.clone();
-    for attacker in attackers.values() {
-        let mut total_assigned = 0;
-        let mut max_assigned = 0;
-        for (blocker_id, damage) in attacker.damage.iter() {
-            if let Some(blocker) = game.get_card(*blocker_id) {
-                if blocker.kind == CardType::Creature {
-                    max_assigned += blocker.state.toughness.current;
+
+    for attack in &[AttackType::FirstStrike, AttackType::Regular] {
+        for attacker in attackers.values() {
+            if let Some(attack) = attacker.attacks.get(attack) {
+                let mut total_assigned = 0;
+                let mut max_assigned = 0;
+                for (blocker_id, damage) in attack.assignments.iter() {
+                    let toughness = game
+                        .turn
+                        .combat
+                        .blockers_toughness
+                        .get(blocker_id)
+                        .unwrap_or(&0);
+                    max_assigned += toughness;
+                    game.turn
+                        .combat
+                        .blockers_toughness
+                        .insert(*blocker_id, toughness - damage);
+                    total_assigned += damage;
+                }
+
+                max_assigned = cmp::min(max_assigned, attack.power.default);
+                if total_assigned < max_assigned {
+                    return false;
                 }
             }
-            total_assigned += damage;
-        }
-
-        max_assigned = cmp::min(max_assigned, attacker.power.default);
-        if total_assigned < max_assigned {
-            return false;
         }
     }
     true
@@ -402,8 +559,12 @@ pub fn combat_damage_step_end(game: &mut Game) {
     let (mut blockers_first, mut blockers_last) =
         split_first_strike(game, game.turn.combat.get_blockers());
 
-    let mut dead = vec![];
-    deal_combat_damage(game, &mut attackers_first, &mut blockers_first);
+    deal_combat_damage(
+        game,
+        &mut attackers_first,
+        &mut blockers_first,
+        AttackType::FirstStrike,
+    );
 
     // Filter creatures that were killed during first combat damage step;
     // these creature can't deal damage in the main combat damage step.
@@ -415,14 +576,16 @@ pub fn combat_damage_step_end(game: &mut Game) {
         .into_iter()
         .filter(|blocker_id| is_alive(game, *blocker_id))
         .collect();
-    deal_combat_damage(game, &mut attackers_last, &mut blockers_last);
+    deal_combat_damage(
+        game,
+        &mut attackers_last,
+        &mut blockers_last,
+        AttackType::Regular,
+    );
 
+    let mut dead = vec![];
     let attackers = game.turn.combat.attackers.clone();
     for attacker in attackers.values() {
-        if !attacker.blocked {
-            // Attacker is not blocked, the defending player takes damage.
-            deal_player_damage(game, attacker.target, attacker.power.current as u16);
-        }
         if !is_alive(game, attacker.id) {
             dead.push(attacker.id);
         }
@@ -441,9 +604,9 @@ pub fn combat_damage_step_end(game: &mut Game) {
 fn split_first_strike(
     game: &mut Game,
     creatures: Vec<ObjectId>,
-) -> (HashSet<ObjectId>, HashSet<ObjectId>) {
-    let mut hit_first = HashSet::new();
-    let mut hit_last = HashSet::new();
+) -> (IndexSet<ObjectId>, IndexSet<ObjectId>) {
+    let mut hit_first = IndexSet::new();
+    let mut hit_last = IndexSet::new();
 
     for creature_id in creatures.iter() {
         if let Some(card) = game.get_card(*creature_id) {
@@ -463,23 +626,34 @@ fn split_first_strike(
 
 fn deal_combat_damage(
     game: &mut Game,
-    can_attack: &mut HashSet<ObjectId>,
-    can_counterattack: &mut HashSet<ObjectId>,
+    can_attack: &mut IndexSet<ObjectId>,
+    can_counterattack: &mut IndexSet<ObjectId>,
+    attack_type: AttackType,
 ) {
     let attackers = game.turn.combat.clone().get_attackers();
     for attacker_id in attackers.iter() {
-        let mut block = HashSet::new();
+        let mut block = IndexSet::new();
+
+        let trample = if let Some(card) = game.get_card(*attacker_id) {
+            card.static_abilities.contains(&StaticAbility::Trample)
+        } else {
+            false
+        };
 
         if let Some(attacker) = game.turn.combat.attackers.get_mut(attacker_id) {
             block = attacker.blockers.clone();
-            if block.len() > 0 {
-                attacker.blocked = true;
-            }
+
+            // Creatures with trample can deal remaining damage to the defending player
+            attacker.blocked = !trample && block.len() > 0;
         }
 
         for blocker in block.iter() {
             let damage_dealt = if let Some(attacker) = game.turn.combat.attackers.get(attacker_id) {
-                *attacker.damage.get(blocker).unwrap_or(&0)
+                if let Some(attack) = attacker.attacks.get(&attack_type) {
+                    *attack.assignments.get(blocker).unwrap_or(&0)
+                } else {
+                    0
+                }
             } else {
                 0
             };
@@ -498,6 +672,15 @@ fn deal_combat_damage(
             if let Some(card) = game.get_card(*attacker_id) {
                 if can_counterattack.contains(blocker) {
                     card.state.toughness.current -= damage_taken;
+                }
+            }
+        }
+
+        if let Some(attacker) = game.turn.combat.attackers.get(attacker_id) {
+            if let Some(attack) = attacker.attacks.get(&attack_type) {
+                if !attacker.blocked && can_attack.contains(attacker_id) {
+                    // Attacker is not blocked, the defending player takes the remaining damage.
+                    deal_player_damage(game, attacker.target, attack.power.current as u16);
                 }
             }
         }
@@ -575,7 +758,7 @@ mod tests {
         game::Game,
         turn::{
             all_passed, assign_combat_damage, combat_damage_step_start, declare_blocker,
-            is_combat_damage_assigned,
+            is_combat_damage_assigned, AttackType,
         },
     };
 
@@ -725,8 +908,8 @@ mod tests {
         declare_blocker(&mut game, blocker_two, attacker_id);
         declare_blockers_step_end(&mut game);
         combat_damage_step_start(&mut game);
-        assign_combat_damage(&mut game, attacker_id, blocker_one, 1);
-        assign_combat_damage(&mut game, attacker_id, blocker_two, 1);
+        assign_combat_damage(&mut game, attacker_id, blocker_one, AttackType::Regular, 1);
+        assign_combat_damage(&mut game, attacker_id, blocker_two, AttackType::Regular, 1);
         combat_damage_step_end(&mut game);
 
         let attacker = game.get_card(attacker_id).unwrap();
@@ -762,18 +945,40 @@ mod tests {
         combat_damage_step_start(&mut game);
 
         // Assign more damage than the creature can deal
-        assert!(!assign_combat_damage(&mut game, attacker_id, blocker_id, 3));
+        assert!(!assign_combat_damage(
+            &mut game,
+            attacker_id,
+            blocker_id,
+            AttackType::Regular,
+            3
+        ));
 
         // Assign negative damage
         assert!(!assign_combat_damage(
             &mut game,
             attacker_id,
             blocker_id,
+            AttackType::Regular,
             -2
         ));
 
         // Assign less damage than the creature can deal
-        assert!(assign_combat_damage(&mut game, attacker_id, blocker_id, 0));
+        assert!(assign_combat_damage(
+            &mut game,
+            attacker_id,
+            blocker_id,
+            AttackType::Regular,
+            0
+        ));
         assert!(!is_combat_damage_assigned(&mut game));
+
+        // Assign first strike damage when creature does not have first strike
+        assert!(!assign_combat_damage(
+            &mut game,
+            attacker_id,
+            blocker_id,
+            AttackType::FirstStrike,
+            1
+        ));
     }
 }

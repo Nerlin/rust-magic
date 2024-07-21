@@ -66,7 +66,7 @@ impl Game {
             .clone()
     }
 
-    pub fn get_next_player(&self, player_id: ObjectId) -> ObjectId {
+    pub fn get_next_player(&mut self, player_id: ObjectId) -> ObjectId {
         let mut found = false;
 
         for player in self.players.iter() {

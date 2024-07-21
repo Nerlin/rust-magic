@@ -30,13 +30,30 @@ pub struct TriggeredAbility {
 pub enum StaticAbility {
     #[default]
     None,
+
+    /// Can attack at the same turn as played.
     Haste,
+
+    /// Can only be blocked by flying creatures or creatures with reach
     Flying,
+
+    /// Can block flying creatures
     Reach,
+
+    /// Can attack without being tapped
     Vigilance,
+
+    /// Cannot attack
     Defender,
+
+    /// Hits first during the combat damage step
     FirstStrike,
+
+    /// Hits first during the combat damage step and then again
     DoubleStrike,
+
+    /// All unblocked combat damage hits the defending player
+    Trample,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -361,11 +378,12 @@ mod tests {
         game::{add_mana, Game},
         mana::Mana,
         turn::{
-            can_declare_attacker, can_declare_blocker, combat_damage_step_end,
-            combat_damage_step_start, declare_attacker, declare_attackers_step_end,
-            declare_attackers_step_start, declare_blocker, declare_blockers_step_end,
-            declare_blockers_step_start, pass_priority, postcombat_step, precombat_step,
-            upkeep_step,
+            assign_combat_damage, can_declare_attacker, can_declare_blocker,
+            combat_damage_step_end, combat_damage_step_start, declare_attacker,
+            declare_attackers_step_end, declare_attackers_step_start, declare_blocker,
+            declare_blockers_step_end, declare_blockers_step_start, fast_combat,
+            fast_declare_attacker, fast_declare_blockers, pass_priority, postcombat_step,
+            precombat_step, reset_combat_assignments, upkeep_step, AttackType,
         },
     };
 
@@ -546,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scorched_rusalka() {
+    fn test_activated_abilitiy_with_additional_cost() {
         let (mut game, player_id, opponent_id) = Game::new();
 
         let mut card = Card::new_creature(player_id, 1, 1);
@@ -661,14 +679,7 @@ mod tests {
         let blocker_id = game.add_card(Card::new_creature(opponent_id, 4, 2));
         put_on_battlefield(&mut game, blocker_id);
 
-        declare_attackers_step_start(&mut game);
-        declare_attacker(&mut game, attacker_id, opponent_id);
-        declare_attackers_step_end(&mut game);
-        declare_blockers_step_start(&mut game);
-        declare_blocker(&mut game, blocker_id, attacker_id);
-        declare_blockers_step_end(&mut game);
-        combat_damage_step_start(&mut game);
-        combat_damage_step_end(&mut game);
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
 
         let card = game.get_card(attacker_id).unwrap();
         assert_eq!(card.zone, Zone::Battlefield);
@@ -692,14 +703,7 @@ mod tests {
         let blocker_id = game.add_card(card);
         put_on_battlefield(&mut game, blocker_id);
 
-        declare_attackers_step_start(&mut game);
-        declare_attacker(&mut game, attacker_id, opponent_id);
-        declare_attackers_step_end(&mut game);
-        declare_blockers_step_start(&mut game);
-        declare_blocker(&mut game, blocker_id, attacker_id);
-        declare_blockers_step_end(&mut game);
-        combat_damage_step_start(&mut game);
-        combat_damage_step_end(&mut game);
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
 
         let card = game.get_card(attacker_id).unwrap();
         assert_eq!(card.zone, Zone::Graveyard);
@@ -724,14 +728,7 @@ mod tests {
         let blocker_id = game.add_card(card);
         put_on_battlefield(&mut game, blocker_id);
 
-        declare_attackers_step_start(&mut game);
-        declare_attacker(&mut game, attacker_id, opponent_id);
-        declare_attackers_step_end(&mut game);
-        declare_blockers_step_start(&mut game);
-        declare_blocker(&mut game, blocker_id, attacker_id);
-        declare_blockers_step_end(&mut game);
-        combat_damage_step_start(&mut game);
-        combat_damage_step_end(&mut game);
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
 
         let card = game.get_card(attacker_id).unwrap();
         assert_eq!(card.zone, Zone::Graveyard);
@@ -753,14 +750,7 @@ mod tests {
         let blocker_id = game.add_card(Card::new_creature(opponent_id, 4, 4));
         put_on_battlefield(&mut game, blocker_id);
 
-        declare_attackers_step_start(&mut game);
-        declare_attacker(&mut game, attacker_id, opponent_id);
-        declare_attackers_step_end(&mut game);
-        declare_blockers_step_start(&mut game);
-        declare_blocker(&mut game, blocker_id, attacker_id);
-        declare_blockers_step_end(&mut game);
-        combat_damage_step_start(&mut game);
-        combat_damage_step_end(&mut game);
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
 
         let card = game.get_card(attacker_id).unwrap();
         assert_eq!(card.zone, Zone::Graveyard);
@@ -782,13 +772,343 @@ mod tests {
         let blocker_id = game.add_card(Card::new_creature(opponent_id, 1, 1));
         put_on_battlefield(&mut game, blocker_id);
 
-        declare_attackers_step_start(&mut game);
-        declare_attacker(&mut game, attacker_id, opponent_id);
-        declare_attackers_step_end(&mut game);
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 3);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_double_strike_player_damage() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 4, 3);
+        card.static_abilities.insert(StaticAbility::DoubleStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        fast_combat(&mut game, attacker_id, &[]);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 12);
+    }
+
+    #[test]
+    fn test_double_strike_multiple_blockers() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 2, 2);
+        card.static_abilities.insert(StaticAbility::DoubleStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_one = game.add_card(Card::new_creature(opponent_id, 1, 4));
+        put_on_battlefield(&mut game, blocker_one);
+
+        let blocker_two = game.add_card(Card::new_creature(opponent_id, 1, 4));
+        put_on_battlefield(&mut game, blocker_two);
+
+        fast_declare_attacker(&mut game, attacker_id);
         declare_blockers_step_start(&mut game);
-        declare_blocker(&mut game, blocker_id, attacker_id);
+        declare_blocker(&mut game, blocker_one, attacker_id);
+        declare_blocker(&mut game, blocker_two, attacker_id);
         declare_blockers_step_end(&mut game);
         combat_damage_step_start(&mut game);
+        reset_combat_assignments(&mut game, attacker_id);
+
+        assert!(assign_combat_damage(
+            &mut game,
+            attacker_id,
+            blocker_two,
+            AttackType::FirstStrike,
+            2
+        ));
+        assert!(assign_combat_damage(
+            &mut game,
+            attacker_id,
+            blocker_two,
+            AttackType::Regular,
+            2
+        ));
+
+        combat_damage_step_end(&mut game);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let card = game.get_card(blocker_one).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 4);
+
+        let card = game.get_card(blocker_two).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 20);
+    }
+
+    #[test]
+    fn test_double_strike_multiple_blockers_auto_assign() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 2, 2);
+        card.static_abilities.insert(StaticAbility::DoubleStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_one = game.add_card(Card::new_creature(opponent_id, 1, 2));
+        put_on_battlefield(&mut game, blocker_one);
+
+        let blocker_two = game.add_card(Card::new_creature(opponent_id, 1, 2));
+        put_on_battlefield(&mut game, blocker_two);
+
+        fast_combat(&mut game, attacker_id, &[blocker_one, blocker_two]);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 1);
+
+        let card = game.get_card(blocker_one).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let card = game.get_card(blocker_two).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 20);
+    }
+
+    #[test]
+    fn test_double_strike_blocked_by_first_strike_auto_assign() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 2, 2);
+        card.static_abilities.insert(StaticAbility::DoubleStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let mut card = Card::new_creature(opponent_id, 1, 2);
+        card.static_abilities.insert(StaticAbility::FirstStrike);
+        let blocker_one = game.add_card(card);
+        put_on_battlefield(&mut game, blocker_one);
+
+        let blocker_two = game.add_card(Card::new_creature(opponent_id, 1, 2));
+        put_on_battlefield(&mut game, blocker_two);
+
+        fast_combat(&mut game, attacker_id, &[blocker_one, blocker_two]);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let card = game.get_card(blocker_one).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let card = game.get_card(blocker_two).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 20);
+    }
+
+    #[test]
+    fn test_double_strike_blocked_by_first_strike() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 2, 2);
+        card.static_abilities.insert(StaticAbility::DoubleStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let mut card = Card::new_creature(opponent_id, 1, 2);
+        card.static_abilities.insert(StaticAbility::FirstStrike);
+        let blocker_one = game.add_card(card);
+        put_on_battlefield(&mut game, blocker_one);
+
+        let blocker_two = game.add_card(Card::new_creature(opponent_id, 1, 2));
+        put_on_battlefield(&mut game, blocker_two);
+
+        fast_declare_attacker(&mut game, attacker_id);
+        fast_declare_blockers(&mut game, &[blocker_one, blocker_two], attacker_id);
+        combat_damage_step_start(&mut game);
+        reset_combat_assignments(&mut game, attacker_id);
+
+        assert!(assign_combat_damage(
+            &mut game,
+            attacker_id,
+            blocker_two,
+            AttackType::FirstStrike,
+            2,
+        ));
+
+        assert!(assign_combat_damage(
+            &mut game,
+            attacker_id,
+            blocker_one,
+            AttackType::Regular,
+            2
+        ));
+        combat_damage_step_end(&mut game);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 1);
+
+        let card = game.get_card(blocker_one).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let card = game.get_card(blocker_two).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_trample() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 4, 3);
+        card.static_abilities.insert(StaticAbility::Trample);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 1, 1));
+        put_on_battlefield(&mut game, blocker_id);
+
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 2);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 17);
+    }
+
+    #[test]
+    fn test_trample_blocked() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 3, 3);
+        card.static_abilities.insert(StaticAbility::Trample);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 1, 3));
+        put_on_battlefield(&mut game, blocker_id);
+
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 2);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 20);
+    }
+
+    #[test]
+    fn test_trample_first_strike() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 3, 3);
+        card.static_abilities.insert(StaticAbility::Trample);
+        card.static_abilities.insert(StaticAbility::FirstStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 1, 1));
+        put_on_battlefield(&mut game, blocker_id);
+
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 3);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 18);
+    }
+
+    #[test]
+    fn test_trample_double_strike_auto_assign() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 3, 3);
+        card.static_abilities.insert(StaticAbility::Trample);
+        card.static_abilities.insert(StaticAbility::DoubleStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 1, 1));
+        put_on_battlefield(&mut game, blocker_id);
+
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 3);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 15);
+    }
+
+    #[test]
+    fn test_trample_double_strike() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 3, 3);
+        card.static_abilities.insert(StaticAbility::Trample);
+        card.static_abilities.insert(StaticAbility::DoubleStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 1, 1));
+        put_on_battlefield(&mut game, blocker_id);
+
+        fast_declare_attacker(&mut game, attacker_id);
+        fast_declare_blockers(&mut game, &[blocker_id], attacker_id);
+        combat_damage_step_start(&mut game);
+        reset_combat_assignments(&mut game, attacker_id);
+        
+        assert!(assign_combat_damage(
+            &mut game,
+            attacker_id,
+            blocker_id,
+            AttackType::FirstStrike,
+            1,
+        ));
+
+        assert!(!assign_combat_damage(
+            &mut game,
+            attacker_id,
+            blocker_id,
+            AttackType::Regular,
+            1
+        ));
         combat_damage_step_end(&mut game);
 
         let card = game.get_card(attacker_id).unwrap();
@@ -797,5 +1117,8 @@ mod tests {
 
         let card = game.get_card(blocker_id).unwrap();
         assert_eq!(card.zone, Zone::Graveyard);
+
+        let opponent = game.get_player(opponent_id).unwrap();
+        assert_eq!(opponent.life, 15);
     }
 }

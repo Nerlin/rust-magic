@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use indexmap::IndexSet;
 
 use crate::{
     abilities::{
@@ -14,7 +14,7 @@ pub struct Card {
     pub owner_id: ObjectId,
     pub name: String,
     pub kind: CardType,
-    pub subtypes: HashSet<CardSubtype>,
+    pub subtypes: IndexSet<CardSubtype>,
     pub cost: Cost,
     pub zone: Zone,
 
@@ -23,7 +23,7 @@ pub struct Card {
 
     pub activated_abilities: Vec<ActivatedAbility>,
     pub triggered_abilities: Vec<TriggeredAbility>,
-    pub static_abilities: HashSet<StaticAbility>,
+    pub static_abilities: IndexSet<StaticAbility>,
 
     pub state: CardState,
 }
