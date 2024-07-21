@@ -8,7 +8,7 @@ use crate::{
     game::{Game, ObjectId, Value},
 };
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Card {
     pub id: ObjectId,
     pub owner_id: ObjectId,
@@ -178,7 +178,7 @@ pub enum Zone {
     Stack,
 }
 
-#[derive(Default, PartialEq, PartialOrd)]
+#[derive(Clone, Default, PartialEq, PartialOrd)]
 pub enum CardType {
     #[default]
     Land,
@@ -207,7 +207,7 @@ pub enum CardSubtype {
     Spider,
 }
 
-#[derive(Default, PartialEq, PartialOrd)]
+#[derive(Clone, Default, PartialEq, PartialOrd)]
 pub struct CardState {
     pub power: Value<i16>,
     pub toughness: Value<i16>,

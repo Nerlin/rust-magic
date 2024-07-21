@@ -3,7 +3,7 @@ use crate::{
     card::{put_on_battlefield, put_on_graveyard, put_on_stack, CardType},
     game::{Game, GameStatus, ObjectId, Stacked, Value},
     mana::{Color, Mana},
-    turn::Step,
+    turn::{Priority, Step},
 };
 
 #[derive(Clone, Debug)]
@@ -98,9 +98,13 @@ pub enum Target {
 
 pub fn create_card_action(
     game: &mut Game,
-    player_id: ObjectId,
     card_id: ObjectId,
+    player_id: ObjectId,
 ) -> Option<Action> {
+    if !can_play_card(game, card_id, player_id) {
+        return None;
+    }
+
     let card = if let Some(card) = game.get_card(card_id) {
         card
     } else {
@@ -128,6 +132,8 @@ pub fn can_play_card(game: &mut Game, card_id: ObjectId, player_id: ObjectId) ->
             // Players can play cards only when they have priority
             return false;
         }
+    } else {
+        return false;
     }
 
     let is_stack_empty = game.stack.len() == 0;
@@ -250,6 +256,7 @@ pub fn resolve_stack(game: &mut Game) {
     while let Some(entry) = game.stack.pop() {
         resolve_stacked(game, entry);
     }
+    game.turn.priority = Some(Priority::new(game.turn.active_player));
 }
 
 pub fn resolve_stacked(game: &mut Game, stacked: Stacked) {
@@ -378,7 +385,7 @@ mod tests {
         game::{add_mana, Game},
         mana::Mana,
         turn::{
-            assign_combat_damage, can_declare_attacker, can_declare_blocker,
+            assign_combat_damage, can_declare_attacker, can_declare_blocker, cleanup_step,
             combat_damage_step_end, combat_damage_step_start, declare_attacker,
             declare_attackers_step_end, declare_attackers_step_start, declare_blocker,
             declare_blockers_step_end, declare_blockers_step_start, fast_combat,
@@ -497,7 +504,7 @@ mod tests {
         put_on_battlefield(&mut game, creature_id);
         precombat_step(&mut game);
 
-        let mut action = create_card_action(&mut game, player_id, sorcery_id).unwrap();
+        let mut action = create_card_action(&mut game, sorcery_id, player_id).unwrap();
         action.choices.cost = Choice::Mana(Mana::from("R"));
         action.choices.target = Choice::Card(creature_id);
 
@@ -552,7 +559,7 @@ mod tests {
         pass_priority(&mut game);
         add_mana(&mut game, opponent_id, Mana::from("RRR"));
 
-        let mut action = create_card_action(&mut game, opponent_id, card_id).unwrap();
+        let mut action = create_card_action(&mut game, card_id, opponent_id).unwrap();
         action.choices.cost = Choice::Mana(Mana::from("R"));
         action.choices.target = Choice::Player(player_id);
 
@@ -561,6 +568,26 @@ mod tests {
 
         let player = game.get_player(player_id).unwrap();
         assert_eq!(player.life, 17);
+    }
+
+    #[test]
+    fn test_cannot_play_instant_if_no_priority() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_instant(player_id);
+        card.cost = Cost::Mana("R");
+        card.effect = Some(Resolve {
+            effect: Effect::Damage(3),
+            target: Target::AnyOf(&[Target::Player, Target::Creature]),
+        });
+        let player_card = game.add_card(card.clone());
+
+        card.owner_id = opponent_id;
+        let opponent_card = game.add_card(card);
+
+        cleanup_step(&mut game);
+        assert!(create_card_action(&mut game, player_card, player_id).is_none());
+        assert!(create_card_action(&mut game, opponent_card, opponent_id).is_none());
     }
 
     #[test]
@@ -738,6 +765,48 @@ mod tests {
     }
 
     #[test]
+    fn test_first_strike_instant_after_priority() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 1, 1);
+        card.static_abilities.insert(StaticAbility::FirstStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 2, 3));
+        put_on_battlefield(&mut game, blocker_id);
+
+        fast_declare_attacker(&mut game, attacker_id);
+        fast_declare_blockers(&mut game, &[blocker_id], attacker_id);
+        combat_damage_step_start(&mut game);
+        combat_damage_step_end(&mut game, AttackType::FirstStrike);
+
+        let mut card = Card::new_instant(player_id);
+        card.cost = Cost::Mana("R");
+        card.effect = Some(Resolve {
+            effect: Effect::Damage(2),
+            target: Target::AnyOf(&[Target::Player, Target::Creature]),
+        });
+        let shock = game.add_card(card);
+        add_mana(&mut game, player_id, Mana::from("R"));
+
+        let mut action = create_card_action(&mut game, shock, player_id).unwrap();
+        action.choices.target = Choice::Card(blocker_id);
+        action.choices.cost = Choice::Mana(Mana::from("R"));
+
+        play_card(&mut game, shock, action);
+        resolve_stack(&mut game);
+        combat_damage_step_end(&mut game, AttackType::Regular);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+    }
+
+    #[test]
     fn test_double_strike() {
         let (mut game, player_id, opponent_id) = Game::new();
 
@@ -829,6 +898,8 @@ mod tests {
             AttackType::FirstStrike,
             2
         ));
+        combat_damage_step_end(&mut game, AttackType::FirstStrike);
+
         assert!(assign_combat_damage(
             &mut game,
             attacker_id,
@@ -836,8 +907,7 @@ mod tests {
             AttackType::Regular,
             2
         ));
-
-        combat_damage_step_end(&mut game);
+        combat_damage_step_end(&mut game, AttackType::Regular);
 
         let card = game.get_card(attacker_id).unwrap();
         assert_eq!(card.zone, Zone::Graveyard);
@@ -948,6 +1018,7 @@ mod tests {
             AttackType::FirstStrike,
             2,
         ));
+        combat_damage_step_end(&mut game, AttackType::FirstStrike);
 
         assert!(assign_combat_damage(
             &mut game,
@@ -956,7 +1027,7 @@ mod tests {
             AttackType::Regular,
             2
         ));
-        combat_damage_step_end(&mut game);
+        combat_damage_step_end(&mut game, AttackType::Regular);
 
         let card = game.get_card(attacker_id).unwrap();
         assert_eq!(card.zone, Zone::Battlefield);
@@ -1093,7 +1164,7 @@ mod tests {
         fast_declare_blockers(&mut game, &[blocker_id], attacker_id);
         combat_damage_step_start(&mut game);
         reset_combat_assignments(&mut game, attacker_id);
-        
+
         assert!(assign_combat_damage(
             &mut game,
             attacker_id,
@@ -1101,6 +1172,7 @@ mod tests {
             AttackType::FirstStrike,
             1,
         ));
+        combat_damage_step_end(&mut game, AttackType::FirstStrike);
 
         assert!(!assign_combat_damage(
             &mut game,
@@ -1109,7 +1181,7 @@ mod tests {
             AttackType::Regular,
             1
         ));
-        combat_damage_step_end(&mut game);
+        combat_damage_step_end(&mut game, AttackType::Regular);
 
         let card = game.get_card(attacker_id).unwrap();
         assert_eq!(card.zone, Zone::Battlefield);
