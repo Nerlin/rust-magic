@@ -559,7 +559,7 @@ pub fn combat_damage_step_end(game: &mut Game, attack: AttackType) {
         AttackType::FirstStrike => (attackers_first, blockers_first),
     };
 
-    deal_combat_damage(game, &mut can_attack, &mut can_block, attack);
+    combat_damage_step(game, &mut can_attack, &mut can_block, attack);
 
     let mut dead = vec![];
     let attackers = game.turn.combat.attackers.clone();
@@ -608,7 +608,7 @@ fn group_creatures_by_attack_type(
     (hit_first, hit_last)
 }
 
-fn deal_combat_damage(
+fn combat_damage_step(
     game: &mut Game,
     can_attack: &mut IndexSet<ObjectId>,
     can_counterattack: &mut IndexSet<ObjectId>,
@@ -617,12 +617,13 @@ fn deal_combat_damage(
     let attackers = game.turn.combat.clone().get_attackers();
     for attacker_id in attackers.iter() {
         let mut block = IndexSet::new();
+        let mut trample = false;
+        let mut deathtouch_attack = false;
 
-        let trample = if let Some(card) = game.get_card(*attacker_id) {
-            card.static_abilities.contains(&StaticAbility::Trample)
-        } else {
-            false
-        };
+        if let Some(card) = game.get_card(*attacker_id) {
+            trample = card.static_abilities.contains(&StaticAbility::Trample);
+            deathtouch_attack = card.static_abilities.contains(&StaticAbility::Deathtouch);
+        }
 
         if let Some(attacker) = game.turn.combat.attackers.get_mut(attacker_id) {
             block = attacker.blockers.clone();
@@ -631,31 +632,47 @@ fn deal_combat_damage(
             attacker.blocked = !trample && block.len() > 0;
         }
 
-        for blocker in block.iter() {
-            let damage_dealt = if let Some(attacker) = game.turn.combat.attackers.get(attacker_id) {
+        for blocker_id in block.iter() {
+            let mut damage_dealt = 0;
+            if let Some(attacker) = game.turn.combat.attackers.get(attacker_id) {
                 if let Some(attack) = attacker.attacks.get(&attack_type) {
-                    *attack.assignments.get(blocker).unwrap_or(&0)
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-
-            let mut damage_taken = 0;
-
-            // Blocker takes damage
-            if let Some(card) = game.get_card(*blocker) {
-                damage_taken = card.state.power.current;
-                if can_attack.contains(attacker_id) {
-                    card.state.toughness.current -= damage_dealt;
+                    damage_dealt = *attack.assignments.get(blocker_id).unwrap_or(&0)
                 }
             }
 
-            // Attacker takes damage
-            if let Some(card) = game.get_card(*attacker_id) {
-                if can_counterattack.contains(blocker) {
-                    card.state.toughness.current -= damage_taken;
+            let mut damage_taken = 0;
+            let mut deathtouch_block = false;
+
+            // Blocker takes damage
+            if let Some(blocker) = game.get_card(*blocker_id) {
+                damage_taken = blocker.state.power.current;
+                if damage_dealt > 0 {
+                    deathtouch_block = blocker
+                        .static_abilities
+                        .contains(&StaticAbility::Deathtouch);
+
+                    if can_attack.contains(attacker_id) {
+                        if deathtouch_attack {
+                            // Any amount of damage dealt by deathtouch creatures is lethal
+                            blocker.state.toughness.current = 0;
+                        } else {
+                            blocker.state.toughness.current -= damage_dealt;
+                        }
+                    }
+                }
+            }
+
+            if damage_taken > 0 {
+                // Attacker takes damage
+                if let Some(attacker) = game.get_card(*attacker_id) {
+                    if can_counterattack.contains(blocker_id) {
+                        if deathtouch_block {
+                            // Any amount of damage dealt by deathtouch creatures is lethal
+                            attacker.state.toughness.current = 0;
+                        } else {
+                            attacker.state.toughness.current -= damage_taken;
+                        }
+                    }
                 }
             }
         }

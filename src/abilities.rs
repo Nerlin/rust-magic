@@ -46,14 +46,17 @@ pub enum StaticAbility {
     /// Cannot attack
     Defender,
 
-    /// Hits first during the combat damage step
+    /// Deals combat damage before other creatures
     FirstStrike,
 
-    /// Hits first during the combat damage step and then again
+    /// Deals combat damage twice (first strike + regular attack)
     DoubleStrike,
 
-    /// All unblocked combat damage hits the defending player
+    /// All unblocked combat damage is dealt to the defending player
     Trample,
+
+    /// Any amount of combat damage dealt by this creature is lethal to other creatures
+    Deathtouch,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -1192,5 +1195,84 @@ mod tests {
 
         let opponent = game.get_player(opponent_id).unwrap();
         assert_eq!(opponent.life, 15);
+    }
+
+    #[test]
+    fn test_deathtouch() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 1, 1);
+        card.static_abilities.insert(StaticAbility::Deathtouch);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 8, 8));
+        put_on_battlefield(&mut game, blocker_id);
+
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
+
+        let attacker = game.get_card(attacker_id).unwrap();
+        assert_eq!(attacker.zone, Zone::Graveyard);
+
+        let blocker = game.get_card(blocker_id).unwrap();
+        assert_eq!(blocker.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_deathtouch_multiple_blockers() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 2, 2);
+        card.static_abilities.insert(StaticAbility::Deathtouch);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_one = game.add_card(Card::new_creature(opponent_id, 4, 6));
+        put_on_battlefield(&mut game, blocker_one);
+
+        let blocker_two = game.add_card(Card::new_creature(opponent_id, 3, 8));
+        put_on_battlefield(&mut game, blocker_two);
+
+        fast_declare_attacker(&mut game, attacker_id);
+        fast_declare_blockers(&mut game, &[blocker_one, blocker_two], attacker_id);
+        combat_damage_step_start(&mut game);
+        reset_combat_assignments(&mut game, attacker_id);
+        assign_combat_damage(&mut game, attacker_id, blocker_one, AttackType::Regular, 1);
+        assign_combat_damage(&mut game, attacker_id, blocker_two, AttackType::Regular, 1);
+        combat_damage_step_end(&mut game, AttackType::Regular);
+
+        let attacker = game.get_card(attacker_id).unwrap();
+        assert_eq!(attacker.zone, Zone::Graveyard);
+
+        let blocker = game.get_card(blocker_one).unwrap();
+        assert_eq!(blocker.zone, Zone::Graveyard);
+
+        let blocker = game.get_card(blocker_one).unwrap();
+        assert_eq!(blocker.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_deathtouch_first_strike() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 1, 1);
+        card.static_abilities.insert(StaticAbility::Deathtouch);
+        card.static_abilities.insert(StaticAbility::FirstStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 8, 8));
+        put_on_battlefield(&mut game, blocker_id);
+
+        fast_combat(&mut game, attacker_id, &[blocker_id]);
+
+        let attacker = game.get_card(attacker_id).unwrap();
+        assert_eq!(attacker.zone, Zone::Battlefield);
+
+        let blocker = game.get_card(blocker_id).unwrap();
+        assert_eq!(blocker.zone, Zone::Graveyard);
     }
 }

@@ -46,6 +46,7 @@ impl Card {
         card.kind = CardType::Creature;
         card.state.power = Value::new(power);
         card.state.toughness = Value::new(toughness);
+        card.state.motion_sickness = Value::new(true);
         card
     }
 
@@ -218,7 +219,7 @@ pub struct CardState {
 impl CardState {
     pub fn new() -> CardState {
         let mut state = CardState::default();
-        state.motion_sickness.default = true;
+        state.motion_sickness.default = false;
         state.tapped.default = false;
         state
     }
