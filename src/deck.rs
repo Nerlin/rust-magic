@@ -86,14 +86,12 @@ mod tests {
     use crate::{
         card::Card,
         deck::{draw_card, put_on_deck_bottom, put_on_deck_top},
-        game::{Game, GameStatus, Player},
+        game::{Game, GameStatus},
     };
 
     #[test]
     fn test_put_on_deck_top() {
-        let mut game = Game::new();
-        let player = Player::new();
-        let player_id = game.add_player(player);
+        let (mut game, player_id, _) = Game::new();
         let forest_id = game.add_card(Card::new_land(player_id));
         let mountain_id = game.add_card(Card::new_land(player_id));
 
@@ -108,9 +106,7 @@ mod tests {
 
     #[test]
     fn test_put_on_deck_bottom() {
-        let mut game = Game::new();
-        let player = Player::new();
-        let player_id = game.add_player(player);
+        let (mut game, player_id, _) = Game::new();
         let forest_id = game.add_card(Card::new_land(player_id));
         let mountain_id = game.add_card(Card::new_land(player_id));
 
@@ -125,9 +121,7 @@ mod tests {
 
     #[test]
     fn test_draw_card() {
-        let mut game = Game::new();
-        let player = Player::new();
-        let player_id = game.add_player(player);
+        let (mut game, player_id, _) = Game::new();
         let card_id = game.add_card(Card::new_sorcery(player_id));
 
         put_on_deck_top(&mut game, card_id, player_id);
@@ -138,9 +132,7 @@ mod tests {
 
     #[test]
     fn test_draw_card_lose_game() {
-        let mut game = Game::new();
-        let player = Player::new();
-        let player_id = game.add_player(player);
+        let (mut game, player_id, _) = Game::new();
 
         let result = draw_card(&mut game, player_id);
         assert_eq!(result, None);

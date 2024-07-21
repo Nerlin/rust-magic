@@ -35,6 +35,8 @@ pub enum StaticAbility {
     Reach,
     Vigilance,
     Defender,
+    FirstStrike,
+    DoubleStrike,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -351,20 +353,25 @@ mod tests {
     use crate::{
         abilities::{
             can_play_card, create_ability_action, create_card_action, play_ability, play_card,
-            resolve_stack, ActivatedAbility, Condition, Cost, Effect, Resolve, Target,
-            TriggeredAbility,
+            resolve_stack, ActivatedAbility, Condition, Cost, Effect, Resolve, StaticAbility,
+            Target, TriggeredAbility,
         },
         action::{Action, Choice},
         card::{put_in_hand, put_on_battlefield, Card, CardSubtype, Zone},
-        game::{add_mana, Game, Player},
+        game::{add_mana, Game},
         mana::Mana,
-        turn::{pass_priority, pass_turn, postcombat_step, precombat_step, upkeep_step, Turn},
+        turn::{
+            can_declare_attacker, can_declare_blocker, combat_damage_step_end,
+            combat_damage_step_start, declare_attacker, declare_attackers_step_end,
+            declare_attackers_step_start, declare_blocker, declare_blockers_step_end,
+            declare_blockers_step_start, pass_priority, postcombat_step, precombat_step,
+            upkeep_step,
+        },
     };
 
     #[test]
     fn test_mana_ability() {
-        let mut game = Game::new();
-        let player_id = game.add_player(Player::new());
+        let (mut game, player_id, _) = Game::new();
 
         let mut card = Card::new_land(player_id);
         card.name = String::from("Forest");
@@ -391,9 +398,7 @@ mod tests {
 
     #[test]
     fn test_mana_ability_with_trigger() {
-        let mut game = Game::new();
-        let player_id = game.add_player(Player::new());
-        game.turn = Turn::new(player_id);
+        let (mut game, player_id, _) = Game::new();
 
         let mut card = Card::new_land(player_id);
         card.name = String::from("City of Brass");
@@ -429,12 +434,8 @@ mod tests {
 
     #[test]
     fn test_activate_damage_ability_for_mana() {
-        let mut game = Game::new();
-        let mut player = Player::new();
-        player.mana.red = 1;
-
-        let player_id = game.add_player(player);
-        let opponent_id = game.add_player(Player::new());
+        let (mut game, player_id, opponent_id) = Game::new();
+        add_mana(&mut game, player_id, Mana::from("R"));
 
         let mut card = Card::new_artifact(player_id);
         card.activated_abilities.push(ActivatedAbility {
@@ -462,12 +463,8 @@ mod tests {
 
     #[test]
     fn test_activate_ability_any_of_target_creature() {
-        let mut game = Game::new();
-        let mut player = Player::new();
-        player.mana.red = 1;
-
-        let player_id = game.add_player(player);
-        game.turn = Turn::new(player_id);
+        let (mut game, player_id, _) = Game::new();
+        add_mana(&mut game, player_id, Mana::from("R"));
 
         let mut card = Card::new_sorcery(player_id);
         card.cost = Cost::Mana("R");
@@ -498,11 +495,9 @@ mod tests {
 
     #[test]
     fn test_play_land() {
-        let mut game = Game::new();
-        let player_id = game.add_player(Player::new());
+        let (mut game, player_id, _) = Game::new();
         let card_id = game.add_card(Card::new_land(player_id));
 
-        pass_turn(&mut game);
         precombat_step(&mut game);
         put_in_hand(&mut game, card_id);
         play_card(&mut game, card_id, Action::new(player_id, card_id));
@@ -513,11 +508,9 @@ mod tests {
 
     #[test]
     fn test_can_play_one_land_per_turn() {
-        let mut game = Game::new();
-        let player_id = game.add_player(Player::new());
+        let (mut game, player_id, _) = Game::new();
         let card_id = game.add_card(Card::new_land(player_id));
 
-        pass_turn(&mut game);
         postcombat_step(&mut game);
         put_in_hand(&mut game, card_id);
         play_card(&mut game, card_id, Action::new(player_id, card_id));
@@ -527,9 +520,7 @@ mod tests {
 
     #[test]
     fn test_can_play_instant_if_has_priority() {
-        let mut game = Game::new();
-        let player_id = game.add_player(Player::new());
-        let opponent_id = game.add_player(Player::new());
+        let (mut game, player_id, opponent_id) = Game::new();
 
         let mut card = Card::new_instant(opponent_id);
         card.cost = Cost::Mana("R");
@@ -539,7 +530,6 @@ mod tests {
         });
         let card_id = game.add_card(card);
 
-        pass_turn(&mut game);
         upkeep_step(&mut game);
         pass_priority(&mut game);
         add_mana(&mut game, opponent_id, Mana::from("RRR"));
@@ -557,9 +547,7 @@ mod tests {
 
     #[test]
     fn test_scorched_rusalka() {
-        let mut game = Game::new();
-        let player_id = game.add_player(Player::new());
-        let opponent_id = game.add_player(Player::new());
+        let (mut game, player_id, opponent_id) = Game::new();
 
         let mut card = Card::new_creature(player_id, 1, 1);
         card.cost = Cost::Mana("R");
@@ -586,6 +574,228 @@ mod tests {
         assert_eq!(opponent.life, 19);
 
         let card = game.get_card(card_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_flying() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 2, 2);
+        card.subtypes.insert(CardSubtype::Dragon);
+        card.static_abilities.insert(StaticAbility::Flying);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let mut card = Card::new_creature(opponent_id, 1, 1);
+        card.subtypes.insert(CardSubtype::Human);
+        let human_id = game.add_card(card);
+        put_on_battlefield(&mut game, human_id);
+
+        let mut card = Card::new_creature(opponent_id, 2, 2);
+        card.subtypes.insert(CardSubtype::Spider);
+        card.static_abilities.insert(StaticAbility::Reach);
+        let spider_id = game.add_card(card);
+        put_on_battlefield(&mut game, spider_id);
+
+        let mut card = Card::new_creature(opponent_id, 1, 1);
+        card.subtypes.insert(CardSubtype::Bird);
+        card.static_abilities.insert(StaticAbility::Flying);
+        let bird_id = game.add_card(card);
+        put_on_battlefield(&mut game, bird_id);
+
+        declare_attackers_step_start(&mut game);
+        declare_attacker(&mut game, attacker_id, opponent_id);
+        declare_attackers_step_end(&mut game);
+        declare_blockers_step_start(&mut game);
+
+        assert!(can_declare_blocker(&mut game, spider_id, attacker_id));
+        assert!(can_declare_blocker(&mut game, bird_id, attacker_id));
+        assert!(!can_declare_blocker(&mut game, human_id, attacker_id));
+    }
+
+    #[test]
+    fn test_vigilance() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 1, 1);
+        card.subtypes.insert(CardSubtype::Human);
+        card.static_abilities.insert(StaticAbility::Vigilance);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        declare_attackers_step_start(&mut game);
+        declare_attacker(&mut game, attacker_id, opponent_id);
+        declare_attackers_step_end(&mut game);
+
+        let attacker = game.get_card(attacker_id).unwrap();
+        assert!(!attacker.state.tapped.current);
+    }
+
+    #[test]
+    fn test_defender() {
+        let (mut game, player_id, _) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 0, 4);
+        card.subtypes.insert(CardSubtype::Spirit);
+        card.static_abilities.insert(StaticAbility::Defender);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        assert!(!can_declare_attacker(&mut game, attacker_id));
+    }
+
+    #[test]
+    fn test_first_strike_attacks_first() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 2, 1);
+        card.static_abilities.insert(StaticAbility::FirstStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 4, 2));
+        put_on_battlefield(&mut game, blocker_id);
+
+        declare_attackers_step_start(&mut game);
+        declare_attacker(&mut game, attacker_id, opponent_id);
+        declare_attackers_step_end(&mut game);
+        declare_blockers_step_start(&mut game);
+        declare_blocker(&mut game, blocker_id, attacker_id);
+        declare_blockers_step_end(&mut game);
+        combat_damage_step_start(&mut game);
+        combat_damage_step_end(&mut game);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 1);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_first_strike_blocks_first() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 4, 2);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let mut card = Card::new_creature(opponent_id, 2, 1);
+        card.static_abilities.insert(StaticAbility::FirstStrike);
+        let blocker_id = game.add_card(card);
+        put_on_battlefield(&mut game, blocker_id);
+
+        declare_attackers_step_start(&mut game);
+        declare_attacker(&mut game, attacker_id, opponent_id);
+        declare_attackers_step_end(&mut game);
+        declare_blockers_step_start(&mut game);
+        declare_blocker(&mut game, blocker_id, attacker_id);
+        declare_blockers_step_end(&mut game);
+        combat_damage_step_start(&mut game);
+        combat_damage_step_end(&mut game);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 1);
+    }
+
+    #[test]
+    fn test_first_strike_simultaneous() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 3, 2);
+        card.static_abilities.insert(StaticAbility::FirstStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let mut card = Card::new_creature(opponent_id, 2, 3);
+        card.static_abilities.insert(StaticAbility::FirstStrike);
+        let blocker_id = game.add_card(card);
+        put_on_battlefield(&mut game, blocker_id);
+
+        declare_attackers_step_start(&mut game);
+        declare_attacker(&mut game, attacker_id, opponent_id);
+        declare_attackers_step_end(&mut game);
+        declare_blockers_step_start(&mut game);
+        declare_blocker(&mut game, blocker_id, attacker_id);
+        declare_blockers_step_end(&mut game);
+        combat_damage_step_start(&mut game);
+        combat_damage_step_end(&mut game);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_double_strike() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 2, 1);
+        card.static_abilities.insert(StaticAbility::DoubleStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 4, 4));
+        put_on_battlefield(&mut game, blocker_id);
+
+        declare_attackers_step_start(&mut game);
+        declare_attacker(&mut game, attacker_id, opponent_id);
+        declare_attackers_step_end(&mut game);
+        declare_blockers_step_start(&mut game);
+        declare_blocker(&mut game, blocker_id, attacker_id);
+        declare_blockers_step_end(&mut game);
+        combat_damage_step_start(&mut game);
+        combat_damage_step_end(&mut game);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+
+        let card = game.get_card(blocker_id).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_double_strike_attacks_first() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_creature(player_id, 4, 3);
+        card.static_abilities.insert(StaticAbility::DoubleStrike);
+        card.static_abilities.insert(StaticAbility::Haste);
+        let attacker_id = game.add_card(card);
+        put_on_battlefield(&mut game, attacker_id);
+
+        let blocker_id = game.add_card(Card::new_creature(opponent_id, 1, 1));
+        put_on_battlefield(&mut game, blocker_id);
+
+        declare_attackers_step_start(&mut game);
+        declare_attacker(&mut game, attacker_id, opponent_id);
+        declare_attackers_step_end(&mut game);
+        declare_blockers_step_start(&mut game);
+        declare_blocker(&mut game, blocker_id, attacker_id);
+        declare_blockers_step_end(&mut game);
+        combat_damage_step_start(&mut game);
+        combat_damage_step_end(&mut game);
+
+        let card = game.get_card(attacker_id).unwrap();
+        assert_eq!(card.zone, Zone::Battlefield);
+        assert_eq!(card.state.toughness.current, 3);
+
+        let card = game.get_card(blocker_id).unwrap();
         assert_eq!(card.zone, Zone::Graveyard);
     }
 }

@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use indexmap::IndexSet;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
 
 use crate::{
     abilities::Effect,
@@ -30,15 +28,12 @@ pub enum GameStatus {
 pub type ObjectId = usize;
 
 impl Game {
-    pub fn new() -> Game {
-        Game {
-            status: GameStatus::Play,
-            uid: 0,
-            stack: vec![],
-            players: vec![],
-            cards: HashMap::new(),
-            turn: Turn::new(0),
-        }
+    pub fn new() -> (Game, ObjectId, ObjectId) {
+        let mut game = Game::default();
+        let player_id = game.add_player(Player::new());
+        let opponent_id = game.add_player(Player::new());
+        game.turn = Turn::new(player_id);
+        (game, player_id, opponent_id)
     }
 
     pub fn get_uid(&mut self) -> ObjectId {
@@ -99,6 +94,19 @@ impl Game {
 
     pub fn get_card(&mut self, card_id: ObjectId) -> Option<&mut Card> {
         self.cards.get_mut(&card_id)
+    }
+}
+
+impl Default for Game {
+    fn default() -> Self {
+        Game {
+            status: GameStatus::Play,
+            uid: 0,
+            stack: vec![],
+            players: vec![],
+            cards: HashMap::new(),
+            turn: Turn::new(0),
+        }
     }
 }
 
@@ -180,15 +188,6 @@ impl<T: Copy + Default + PartialEq + PartialOrd> Value<T> {
     }
 }
 
-pub fn start_game(game: &mut Game) {
-    if game.players.len() != 2 {
-        panic!("The game must include exactly two players.");
-    }
-
-    let active_player = game.players.choose(&mut thread_rng()).unwrap();
-    game.turn = Turn::new(active_player.id);
-}
-
 pub fn add_mana(game: &mut Game, player_id: ObjectId, mana: Mana) {
     if let Some(player) = game.get_player(player_id) {
         player.mana += mana;
@@ -204,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_lethal_damage() {
-        let mut game = Game::new();
+        let mut game = Game::default();
         let mut player = Player::new();
         player.life = 3;
 
