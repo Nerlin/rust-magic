@@ -173,7 +173,7 @@ pub fn untap_step(game: &mut Game) {
         untap_card(game, card_id, None);
         if let Some(card) = game.get_card(card_id) {
             if card.kind == CardType::Creature {
-                card.state.motion_sickness.current = false;
+                card.state.summoning_sickness.current = false;
             }
         }
     }
@@ -288,7 +288,7 @@ pub fn can_declare_attacker(game: &mut Game, card_id: ObjectId) -> bool {
         if card.static_abilities.contains(&StaticAbility::Defender) {
             return false;
         }
-        return !card.state.tapped.current && !card.state.motion_sickness.current;
+        return !card.state.tapped.current && !card.state.summoning_sickness.current;
     }
     false
 }

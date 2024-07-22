@@ -224,25 +224,25 @@ pub fn create_ability_action(
     }
 }
 
-pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, action: Action) {
+pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, action: Action) -> bool {
     let card = if let Some(card) = game.get_card(card_id) {
         card
     } else {
-        return;
+        return false;
     };
 
     let ability = if let Some(ability) = card.activated_abilities.get_mut(ability_id) {
         ability.clone()
     } else {
-        return;
+        return false;
     };
 
     if !action.valid(game) {
-        return;
+        return false;
     }
 
     if !action.pay(game) {
-        return;
+        return false;
     }
 
     let effect = ability.effect.clone();
@@ -253,6 +253,7 @@ pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, actio
     } else {
         game.stack.push(entry);
     }
+    true
 }
 
 pub fn resolve_stack(game: &mut Game) {
@@ -367,7 +368,7 @@ pub fn apply_static_abilities(game: &mut Game, card_id: ObjectId) {
         for ability in card.static_abilities.iter() {
             match ability {
                 StaticAbility::Haste => {
-                    card.state.motion_sickness = Value::new(false);
+                    card.state.summoning_sickness = Value::new(false);
                 }
                 _ => {}
             }
@@ -487,6 +488,52 @@ mod tests {
 
         let player = game.get_player(player_id).unwrap();
         assert_eq!(player.mana.red, 0);
+    }
+
+    #[test]
+    fn test_activate_mana_ability_with_summoning_sickness() {
+        let (mut game, player_id, _) = Game::new();
+        add_mana(&mut game, player_id, Mana::from("R"));
+
+        let mut card = Card::new_creature(player_id, 1, 1);
+        card.activated_abilities.push(ActivatedAbility {
+            cost: Cost::Tap(Target::Source),
+            effect: Effect::Mana(Mana::from("G")),
+            target: Target::Owner,
+        });
+        let card_id = game.add_card(card);
+        put_on_battlefield(&mut game, card_id);
+
+        let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();
+        action.choices.cost = Choice::Card(card_id);
+        action.choices.target = Choice::Player(player_id);
+
+        assert!(!play_ability(&mut game, card_id, 0, action));
+    }
+
+    #[test]
+    fn test_activate_mana_ability_with_haste() {
+        let (mut game, player_id, _) = Game::new();
+        add_mana(&mut game, player_id, Mana::from("R"));
+
+        let mut card = Card::new_creature(player_id, 1, 1);
+        card.static_abilities.insert(StaticAbility::Haste);
+        card.activated_abilities.push(ActivatedAbility {
+            cost: Cost::Tap(Target::Source),
+            effect: Effect::Mana(Mana::from("G")),
+            target: Target::Owner,
+        });
+        let card_id = game.add_card(card);
+        put_on_battlefield(&mut game, card_id);
+
+        let mut action = create_ability_action(&mut game, player_id, card_id, 0).unwrap();
+        action.choices.cost = Choice::Card(card_id);
+        action.choices.target = Choice::Player(player_id);
+
+        assert!(play_ability(&mut game, card_id, 0, action));
+
+        let player = game.get_player(player_id).unwrap();
+        assert_eq!(player.mana.green, 1);
     }
 
     #[test]

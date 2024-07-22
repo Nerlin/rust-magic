@@ -102,7 +102,19 @@ impl Action {
             Cost::None => true,
             Cost::Mana(mana) => self.choices.cost.validate_mana(&Mana::from(*mana)),
             Cost::Tap(target) => match target {
-                Target::Source => self.choices.cost.validate_card(self.card_id),
+                Target::Source => {
+                    if !self.choices.cost.validate_card(self.card_id) {
+                        return false;
+                    }
+
+                    if let Some(card) = game.get_card(self.card_id) {
+                        // Creatures can be tapped for their ability only if they don't have summoning sickness
+                        return card.kind != CardType::Creature
+                            || !card.state.summoning_sickness.current;
+                    }
+
+                    true
+                }
                 _ => true,
             },
             Cost::Sacrifice(target) => match target {
