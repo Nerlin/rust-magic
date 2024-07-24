@@ -1,6 +1,6 @@
 use crate::{
     action::{Action, Choice},
-    card::{put_on_battlefield, put_on_graveyard, put_on_stack, CardType},
+    card::{draw_card, put_on_battlefield, put_on_graveyard, put_on_stack, CardType},
     game::{Game, GameStatus, ObjectId, Stacked, Value},
     mana::{Color, Mana},
     turn::{Priority, Step},
@@ -77,6 +77,7 @@ pub enum Effect {
     Mana(Mana),
     Damage(u16),
     Discard(usize),
+    Draw(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -328,6 +329,14 @@ fn resolve_effect(game: &mut Game, effect: Effect, action: Action) {
                 }
                 _ => {}
             },
+            Effect::Draw(cards) => match action.choices.target {
+                Choice::Player(player_id) => {
+                    for _ in 1..=cards {
+                        draw_card(game, player_id);
+                    }
+                }
+                _ => {}
+            },
         }
     }
 }
@@ -378,6 +387,8 @@ pub fn apply_static_abilities(game: &mut Game, card_id: ObjectId) {
 
 #[cfg(test)]
 mod tests {
+    use indexmap::IndexSet;
+
     use crate::{
         abilities::{
             can_play_card, create_ability_action, create_card_action, play_ability, play_card,
@@ -385,8 +396,8 @@ mod tests {
             Target, TriggeredAbility,
         },
         action::{Action, Choice},
-        card::{put_in_hand, put_on_battlefield, Card, CardSubtype, Zone},
-        game::{add_mana, Game},
+        card::{put_in_hand, put_on_battlefield, put_on_deck_bottom, Card, CardSubtype, Zone},
+        game::{add_mana, Game, ObjectId},
         mana::Mana,
         turn::{
             assign_combat_damage, can_declare_attacker, can_declare_blocker, cleanup_step,
@@ -638,6 +649,52 @@ mod tests {
         cleanup_step(&mut game);
         assert!(create_card_action(&mut game, player_card, player_id).is_none());
         assert!(create_card_action(&mut game, opponent_card, opponent_id).is_none());
+    }
+
+    #[test]
+    fn test_draw_card_spell() {
+        let (mut game, player_id, _) = Game::new();
+
+        let mut card = Card::new_instant(player_id);
+        card.cost = Cost::Mana("U");
+        card.effect = Some(Resolve {
+            effect: Effect::Draw(3),
+            target: Target::Player,
+        });
+        let card_id = game.add_card(card.clone());
+        put_in_hand(&mut game, card_id);
+
+        let mut drawn_cards = vec![];
+        for _ in 1..=3 {
+            let card_id = game.add_card(Card::new_land(player_id));
+            put_on_deck_bottom(&mut game, card_id, player_id);
+            drawn_cards.push(card_id);
+        }
+
+        precombat_step(&mut game);
+        add_mana(&mut game, player_id, Mana::from("U"));
+
+        let mut action = create_card_action(&mut game, card_id, player_id).unwrap();
+        action.choices.target = Choice::Player(player_id);
+        action.choices.cost = Choice::Mana(Mana::from("U"));
+
+        play_card(&mut game, card_id, action);
+        resolve_stack(&mut game);
+
+        let hand: IndexSet<ObjectId>;
+        {
+            let player = game.get_player(player_id).unwrap();
+            assert_eq!(player.hand.len(), 3);
+            assert_eq!(player.library.len(), 0);
+
+            hand = player.hand.clone();
+        }
+
+        for card_id in drawn_cards.iter() {
+            let card = game.get_card(*card_id).unwrap();
+            assert_eq!(card.zone, Zone::Hand);
+            assert!(hand.contains(card_id));
+        }
     }
 
     #[test]

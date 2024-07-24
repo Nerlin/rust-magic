@@ -5,8 +5,7 @@ use indexmap::{IndexMap, IndexSet};
 use crate::{
     abilities::{deal_player_damage, Effect, StaticAbility},
     action::Action,
-    card::{is_alive, put_on_graveyard, untap_card, CardType, Zone},
-    deck::draw_card,
+    card::{draw_card, is_alive, put_on_graveyard, untap_card, CardType, Zone},
     events::{dispatch_event, Event, PhaseEvent},
     game::{Game, ObjectId, Value},
 };
