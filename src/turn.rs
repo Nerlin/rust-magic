@@ -4,7 +4,6 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::{
     abilities::{deal_player_damage, Effect, StaticAbility},
-    action::Action,
     card::{draw_card, is_alive, put_on_graveyard, untap_card, CardType, Zone},
     events::{dispatch_event, Event, PhaseEvent},
     game::{Game, ObjectId, Value},
@@ -699,7 +698,7 @@ pub fn end_step(game: &mut Game) {
     change_step(game, Step::End);
 }
 
-pub fn cleanup_step(game: &mut Game) -> Option<Action> {
+pub fn cleanup_step(game: &mut Game) -> Effect {
     game.turn.step = Step::Cleanup;
     game.turn.priority = None;
 
@@ -712,13 +711,10 @@ pub fn cleanup_step(game: &mut Game) -> Option<Action> {
     if let Some(player) = game.get_player(game.turn.active_player) {
         let hand_size = player.hand.len();
         if hand_size > player.hand_size_limit.current {
-            let mut action = Action::new(player.id, 0);
-            action.set_required_effect(Effect::Discard(hand_size - player.hand_size_limit.current));
-
-            return Some(action);
+            return Effect::Discard(hand_size - player.hand_size_limit.current);
         }
     }
-    None
+    Effect::None
 }
 
 pub fn pass_priority(game: &mut Game) {

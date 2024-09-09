@@ -1,13 +1,14 @@
 use crate::{
     action::{Action, Choice},
     card::{draw_card, put_on_battlefield, put_on_graveyard, put_on_stack, CardType},
-    game::{Game, GameStatus, ObjectId, Stacked, Value},
+    game::{Game, GameStatus, ObjectId, Resolve, Value},
     mana::{Color, Mana},
     turn::{Priority, Step},
 };
+use std::collections::VecDeque;
 
 #[derive(Clone, Debug)]
-pub struct Resolve {
+pub struct PlayAbility {
     pub effect: Effect,
     pub target: Target,
 }
@@ -71,13 +72,38 @@ pub enum Cost {
     And(&'static [Cost]),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Effect {
     None,
     Mana(Mana),
     Damage(u16),
     Discard(usize),
     Draw(usize),
+
+    And(VecDeque<Effect>),
+}
+
+impl Effect {
+    pub fn get_required_choice(&self) -> Choice {
+        match self {
+            Effect::Mana(mana) => {
+                if mana.has(&Color::Any) {
+                    Choice::Mana(mana.clone())
+                } else {
+                    Choice::None
+                }
+            }
+            Effect::Discard(count) => Choice::And(vec![Choice::Card(0); *count]),
+            Effect::And(effects) => {
+                let mut choices = vec![];
+                for effect in effects {
+                    choices.push(effect.get_required_choice());
+                }
+                Choice::And(choices)
+            }
+            _ => Choice::None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -115,19 +141,17 @@ pub fn create_card_action(
         return None;
     };
 
-    return if let Some(resolve) = &card.effect {
+    if let Some(resolve) = &card.play_ability {
         let cost = card.cost.clone();
-        let effect = resolve.effect.clone();
         let target = resolve.target.clone();
 
         let mut action = Action::new(player_id, card_id);
         action.set_required_cost(cost);
         action.set_required_target(target);
-        action.set_required_effect(effect);
         Some(action)
     } else {
         None
-    };
+    }
 }
 
 pub fn can_play_card(game: &mut Game, card_id: ObjectId, player_id: ObjectId) -> bool {
@@ -191,7 +215,17 @@ pub fn play_card(game: &mut Game, card_id: ObjectId, action: Action) {
             game.turn.lands_played += 1;
             put_on_battlefield(game, card_id);
         } else {
-            let spell = Stacked::Spell { card_id, action };
+            let effect = if let Some(play) = card.play_ability.clone() {
+                play.effect
+            } else {
+                Effect::None
+            };
+
+            let spell = Resolve::Spell {
+                card_id,
+                action,
+                effect,
+            };
             game.stack.push(spell);
 
             put_on_stack(game, card_id)
@@ -246,80 +280,104 @@ pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, actio
         return false;
     }
 
+    let effect_choice = action.choices.effect.clone();
     let effect = ability.effect.clone();
-    let entry = Stacked::Ability { effect, action };
+    let entry = Resolve::Ability { effect, action };
+    game.stack.push(entry);
+
     if let Effect::Mana(_) = ability.effect {
         // Mana abilities are resolved without stack.
-        resolve_stacked(game, entry);
-    } else {
-        game.stack.push(entry);
+        start_resolve(game);
+        resolve_choice(game, effect_choice);
+        end_resolve(game);
     }
     true
 }
 
-pub fn resolve_stack(game: &mut Game) {
-    while let Some(entry) = game.stack.pop() {
-        resolve_stacked(game, entry);
+/// Resolves the current spell or ability that does not require player choices.
+pub fn resolve_auto(game: &mut Game) {
+    start_resolve(game);
+
+    // TODO: Return Result<Effect, Err> to verify that the choice is correct.
+    resolve_choice(game, Choice::None);
+    end_resolve(game);
+}
+
+pub fn start_resolve(game: &mut Game) {
+    if game.stack.is_empty() {
+        panic!("Stack is empty.");
     }
+    game.resolve = game.stack.pop();
+}
+
+pub fn resolve_choice(game: &mut Game, choice: Choice) -> Effect {
+    let mut resolve = game.resolve.clone();
+    let next_effect = match &mut resolve {
+        Some(Resolve::Spell {
+            ref mut effect,
+            action,
+            ..
+        }) => resolve_effect(game, effect, &action, choice),
+        Some(Resolve::Ability {
+            ref mut effect,
+            action,
+        }) => resolve_effect(game, effect, &action, choice),
+        None => Effect::None,
+    };
+
+    game.resolve = resolve;
+    if let Choice::None = next_effect.get_required_choice() {
+        if next_effect != Effect::None {
+            // Automatically resolve the next effect does not require a player choice
+            return resolve_choice(game, Choice::None);
+        }
+    }
+
+    next_effect
+}
+
+pub fn end_resolve(game: &mut Game) {
+    let resolve = game.resolve.clone();
+    if let Some(Resolve::Spell { card_id, .. }) = resolve {
+        if let Some(card) = game.get_card(card_id) {
+            match &card.kind {
+                CardType::Artifact
+                | CardType::Enchantment
+                | CardType::Creature
+                | CardType::Land => put_on_battlefield(game, card_id),
+                CardType::Instant | CardType::Sorcery => put_on_graveyard(game, card_id),
+            }
+        }
+    }
+
+    game.resolve = None;
     game.turn.priority = Some(Priority::new(game.turn.active_player));
 }
 
-pub fn resolve_stacked(game: &mut Game, stacked: Stacked) {
-    match stacked {
-        Stacked::Spell { card_id, action } => {
-            let played_effect = if let Some(card) = game.get_card(card_id) {
-                if let Some(resolve) = &card.effect {
-                    Some(resolve.effect.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            if let Some(effect) = played_effect {
-                resolve_effect(game, effect, action);
-            }
-
-            if let Some(card) = game.get_card(card_id) {
-                match &card.kind {
-                    CardType::Artifact | CardType::Enchantment | CardType::Creature => {
-                        put_on_battlefield(game, card_id)
-                    }
-                    CardType::Instant | CardType::Sorcery => put_on_graveyard(game, card_id),
-                    CardType::Land => panic!("Lands must not use stack."),
-                }
-            }
-        }
-        Stacked::Ability { effect, action } => resolve_effect(game, effect, action),
-    }
-}
-
-fn resolve_effect(game: &mut Game, effect: Effect, action: Action) {
+fn resolve_effect(game: &mut Game, effect: &mut Effect, action: &Action, choice: Choice) -> Effect {
     if let Some(owner) = game.get_player(action.player_id) {
         match effect {
-            Effect::None => {}
             Effect::Mana(mana) => {
                 if mana.has(&Color::Any) {
-                    if let Choice::Mana(mana) = action.choices.effect {
+                    if let Choice::Mana(mana) = choice {
                         owner.mana += mana;
                     } else {
                         panic!("The ability required choosing mana.");
                     }
                 } else {
-                    owner.mana += mana;
+                    owner.mana += *mana;
                 }
             }
             Effect::Damage(damage) => match action.choices.target {
                 Choice::Player(player_id) => {
-                    deal_player_damage(game, player_id, damage);
+                    deal_player_damage(game, player_id, *damage);
                 }
                 Choice::Card(card_id) => {
-                    deal_damage(game, card_id, damage);
+                    deal_damage(game, card_id, *damage);
                 }
                 _ => {}
             },
-            Effect::Discard(_) => match action.choices.effect {
+            Effect::Discard(_) => match choice {
                 Choice::And(choices) => {
                     for choice in choices.iter() {
                         if let Choice::Card(card_id) = choice {
@@ -327,18 +385,41 @@ fn resolve_effect(game: &mut Game, effect: Effect, action: Action) {
                         }
                     }
                 }
+                Choice::Card(card_id) => {
+                    put_on_graveyard(game, card_id);
+                }
                 _ => {}
             },
-            Effect::Draw(cards) => match action.choices.target {
-                Choice::Player(player_id) => {
-                    for _ in 1..=cards {
-                        draw_card(game, player_id);
+            Effect::Draw(count) => match action.required.target {
+                Target::Owner => {
+                    for _ in 1..=*count {
+                        draw_card(game, action.player_id);
+                    }
+                }
+                Target::Player => {
+                    if let Choice::Player(player_id) = action.choices.target {
+                        for _ in 1..=*count {
+                            draw_card(game, player_id);
+                        }
                     }
                 }
                 _ => {}
             },
-        }
+            Effect::And(effects) => {
+                if let Some(ref mut effect) = effects.pop_front() {
+                    resolve_effect(game, effect, action, choice);
+                }
+                if effects.is_empty() {
+                    return Effect::None;
+                } else if let Some(effect) = effects.front() {
+                    return effect.clone();
+                }
+            }
+            _ => {}
+        };
+        return Effect::None;
     }
+    Effect::None
 }
 
 pub(crate) fn deal_player_damage(game: &mut Game, player_id: ObjectId, damage: u16) {
@@ -388,11 +469,14 @@ pub fn apply_static_abilities(game: &mut Game, card_id: ObjectId) {
 #[cfg(test)]
 mod tests {
     use indexmap::IndexSet;
+    use std::collections::VecDeque;
 
+    use crate::abilities::{end_resolve, resolve_choice, start_resolve};
+    use crate::card::put_on_deck_top;
     use crate::{
         abilities::{
             can_play_card, create_ability_action, create_card_action, play_ability, play_card,
-            resolve_stack, ActivatedAbility, Condition, Cost, Effect, Resolve, StaticAbility,
+            resolve_auto, ActivatedAbility, Condition, Cost, Effect, PlayAbility, StaticAbility,
             Target, TriggeredAbility,
         },
         action::{Action, Choice},
@@ -465,7 +549,7 @@ mod tests {
         action.choices.effect = Choice::Mana(Mana::from("B"));
 
         play_ability(&mut game, card_id, 0, action);
-        resolve_stack(&mut game);
+        resolve_auto(&mut game);
 
         let player = game.get_player(player_id).unwrap();
         assert_eq!(player.mana.black, 1);
@@ -492,7 +576,7 @@ mod tests {
         action.choices.target = Choice::Player(opponent_id);
 
         play_ability(&mut game, card_id, 0, action);
-        resolve_stack(&mut game);
+        resolve_auto(&mut game);
 
         let opponent = game.get_player(opponent_id).unwrap();
         assert_eq!(opponent.life, 19);
@@ -554,7 +638,7 @@ mod tests {
 
         let mut card = Card::new_sorcery(player_id);
         card.cost = Cost::Mana("R");
-        card.effect = Some(Resolve {
+        card.play_ability = Some(PlayAbility {
             effect: Effect::Damage(2),
             target: Target::AnyOf(&[Target::Player, Target::Creature]),
         });
@@ -570,7 +654,7 @@ mod tests {
         action.choices.target = Choice::Card(creature_id);
 
         play_card(&mut game, sorcery_id, action);
-        resolve_stack(&mut game);
+        resolve_auto(&mut game);
 
         let card = game.get_card(sorcery_id).unwrap();
         assert_eq!(card.zone, Zone::Graveyard);
@@ -610,7 +694,7 @@ mod tests {
 
         let mut card = Card::new_instant(opponent_id);
         card.cost = Cost::Mana("R");
-        card.effect = Some(Resolve {
+        card.play_ability = Some(PlayAbility {
             effect: Effect::Damage(3),
             target: Target::AnyOf(&[Target::Player, Target::Creature]),
         });
@@ -625,7 +709,7 @@ mod tests {
         action.choices.target = Choice::Player(player_id);
 
         play_card(&mut game, card_id, action);
-        resolve_stack(&mut game);
+        resolve_auto(&mut game);
 
         let player = game.get_player(player_id).unwrap();
         assert_eq!(player.life, 17);
@@ -637,7 +721,7 @@ mod tests {
 
         let mut card = Card::new_instant(player_id);
         card.cost = Cost::Mana("R");
-        card.effect = Some(Resolve {
+        card.play_ability = Some(PlayAbility {
             effect: Effect::Damage(3),
             target: Target::AnyOf(&[Target::Player, Target::Creature]),
         });
@@ -657,7 +741,7 @@ mod tests {
 
         let mut card = Card::new_instant(player_id);
         card.cost = Cost::Mana("U");
-        card.effect = Some(Resolve {
+        card.play_ability = Some(PlayAbility {
             effect: Effect::Draw(3),
             target: Target::Player,
         });
@@ -679,7 +763,7 @@ mod tests {
         action.choices.cost = Choice::Mana(Mana::from("U"));
 
         play_card(&mut game, card_id, action);
-        resolve_stack(&mut game);
+        resolve_auto(&mut game);
 
         let hand: IndexSet<ObjectId>;
         {
@@ -698,7 +782,50 @@ mod tests {
     }
 
     #[test]
-    fn test_activated_abilitiy_with_additional_cost() {
+    fn test_draw_discard() {
+        let (mut game, player_id, _) = Game::new();
+
+        let mut card = Card::new_sorcery(player_id);
+        card.cost = Cost::Mana("U");
+        card.play_ability = Some(PlayAbility {
+            effect: Effect::And(VecDeque::from([Effect::Draw(1), Effect::Discard(1)])),
+            target: Target::Owner,
+        });
+        let card_id = game.add_card(card.clone());
+        put_in_hand(&mut game, card_id);
+
+        let drawn_card = game.add_card(Card::new_land(player_id));
+        put_on_deck_top(&mut game, drawn_card, player_id);
+
+        precombat_step(&mut game);
+        add_mana(&mut game, player_id, Mana::from("U"));
+
+        let mut action = create_card_action(&mut game, card_id, player_id).unwrap();
+        action.choices.cost = Choice::Mana(Mana::from("U"));
+
+        play_card(&mut game, card_id, action);
+        start_resolve(&mut game);
+
+        let next_effect = resolve_choice(&mut game, Choice::None);
+        assert_eq!(next_effect, Effect::Discard(1));
+
+        let card = game.get_card(drawn_card).unwrap();
+        assert_eq!(card.zone, Zone::Hand);
+
+        let next_effect = resolve_choice(&mut game, Choice::Card(drawn_card));
+        assert_eq!(next_effect, Effect::None);
+
+        end_resolve(&mut game);
+
+        let resolved_card = game.get_card(card_id).unwrap();
+        assert_eq!(resolved_card.zone, Zone::Graveyard);
+
+        let card = game.get_card(drawn_card).unwrap();
+        assert_eq!(card.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_activated_ability_with_additional_cost() {
         let (mut game, player_id, opponent_id) = Game::new();
 
         let mut card = Card::new_creature(player_id, 1, 1);
@@ -720,7 +847,7 @@ mod tests {
         action.choices.target = Choice::Player(opponent_id);
 
         play_ability(&mut game, card_id, 0, action);
-        resolve_stack(&mut game);
+        resolve_auto(&mut game);
 
         let opponent = game.get_player(opponent_id).unwrap();
         assert_eq!(opponent.life, 19);
@@ -891,7 +1018,7 @@ mod tests {
 
         let mut card = Card::new_instant(player_id);
         card.cost = Cost::Mana("R");
-        card.effect = Some(Resolve {
+        card.play_ability = Some(PlayAbility {
             effect: Effect::Damage(2),
             target: Target::AnyOf(&[Target::Player, Target::Creature]),
         });
@@ -903,7 +1030,7 @@ mod tests {
         action.choices.cost = Choice::Mana(Mana::from("R"));
 
         play_card(&mut game, shock, action);
-        resolve_stack(&mut game);
+        resolve_auto(&mut game);
         combat_damage_step_end(&mut game, AttackType::Regular);
 
         let card = game.get_card(attacker_id).unwrap();

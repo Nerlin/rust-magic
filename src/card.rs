@@ -4,7 +4,8 @@ use rand::thread_rng;
 
 use crate::{
     abilities::{
-        apply_static_abilities, ActivatedAbility, Cost, Resolve, StaticAbility, TriggeredAbility,
+        apply_static_abilities, ActivatedAbility, Cost, PlayAbility, StaticAbility,
+        TriggeredAbility,
     },
     events::{dispatch_event, CardEvent, Event},
     game::{Game, GameStatus, ObjectId, Value},
@@ -21,7 +22,7 @@ pub struct Card {
     pub zone: Zone,
 
     /// Defines the ability that happens when the card is resolved
-    pub effect: Option<Resolve>,
+    pub play_ability: Option<PlayAbility>,
 
     pub activated_abilities: Vec<ActivatedAbility>,
     pub triggered_abilities: Vec<TriggeredAbility>,

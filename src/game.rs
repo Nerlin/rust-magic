@@ -13,9 +13,10 @@ use crate::{
 pub struct Game {
     pub turn: Turn,
     pub status: GameStatus,
+    pub(crate) resolve: Option<Resolve>,
     pub(crate) players: Vec<Player>,
     pub(crate) cards: HashMap<usize, Card>,
-    pub(crate) stack: Vec<Stacked>,
+    pub(crate) stack: Vec<Resolve>,
     uid: ObjectId,
 }
 
@@ -106,13 +107,22 @@ impl Default for Game {
             players: vec![],
             cards: HashMap::new(),
             turn: Turn::new(0),
+            resolve: None,
         }
     }
 }
 
-pub enum Stacked {
-    Spell { card_id: ObjectId, action: Action },
-    Ability { effect: Effect, action: Action },
+#[derive(Clone)]
+pub enum Resolve {
+    Spell {
+        effect: Effect,
+        action: Action,
+        card_id: ObjectId,
+    },
+    Ability {
+        effect: Effect,
+        action: Action,
+    },
 }
 
 pub struct Player {

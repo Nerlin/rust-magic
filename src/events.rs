@@ -1,7 +1,7 @@
 use crate::{
     abilities::{Condition, Target},
     action::Action,
-    game::{Game, ObjectId, Stacked},
+    game::{Game, ObjectId, Resolve},
     turn::Step,
 };
 
@@ -107,9 +107,8 @@ fn run_player_triggers(game: &mut Game, player_id: ObjectId, event: &Event) {
             if event.meets(&trigger.condition) {
                 let mut action = Action::new(player_id, card_id);
                 action.set_required_target(trigger.target.clone());
-                action.set_required_effect(trigger.effect.clone());
 
-                game.stack.push(Stacked::Ability {
+                game.stack.push(Resolve::Ability {
                     effect: trigger.effect.clone(),
                     action,
                 });
