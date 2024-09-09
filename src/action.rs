@@ -152,8 +152,9 @@ pub struct Choices {
     pub effect: Choice,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Choice {
+    #[default]
     None,
     Mana(Mana),
     Player(ObjectId),
@@ -162,7 +163,7 @@ pub enum Choice {
 }
 
 impl Choice {
-    fn validate_mana(&self, cost: &Mana) -> bool {
+    pub fn validate_mana(&self, cost: &Mana) -> bool {
         match self {
             Choice::Mana(mana) => mana.enough(cost),
             Choice::And(choices) => choices.iter().any(|choice| choice.validate_mana(cost)),
@@ -170,7 +171,7 @@ impl Choice {
         }
     }
 
-    fn validate_card(&self, card_id: ObjectId) -> bool {
+    pub fn validate_card(&self, card_id: ObjectId) -> bool {
         match self {
             Choice::Card(chosen_card) => *chosen_card == card_id,
             Choice::And(choices) => choices.iter().any(|choice| choice.validate_card(card_id)),
@@ -178,7 +179,7 @@ impl Choice {
         }
     }
 
-    fn validate_player(&self, player_id: Option<ObjectId>) -> bool {
+    pub fn validate_player(&self, player_id: Option<ObjectId>) -> bool {
         match self {
             Choice::Player(chosen_player) => player_id == None || player_id == Some(*chosen_player),
             Choice::And(choices) => choices
@@ -188,7 +189,7 @@ impl Choice {
         }
     }
 
-    fn validate_creature(&self, game: &mut Game) -> Option<ObjectId> {
+    pub fn validate_creature(&self, game: &mut Game) -> Option<ObjectId> {
         match self {
             Choice::Card(card_id) => {
                 if let Some(card) = game.get_card(*card_id) {

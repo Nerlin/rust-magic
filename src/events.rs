@@ -1,7 +1,9 @@
+use crate::abilities::Resolve;
+use crate::abilities::ResolveKind::Ability;
 use crate::{
     abilities::{Condition, Target},
     action::Action,
-    game::{Game, ObjectId, Resolve},
+    game::{Game, ObjectId},
     turn::Step,
 };
 
@@ -108,9 +110,11 @@ fn run_player_triggers(game: &mut Game, player_id: ObjectId, event: &Event) {
                 let mut action = Action::new(player_id, card_id);
                 action.set_required_target(trigger.target.clone());
 
-                game.stack.push(Resolve::Ability {
+                game.stack.push(Resolve {
+                    kind: Ability,
                     effect: trigger.effect.clone(),
                     action,
+                    player_id,
                 });
             }
         }

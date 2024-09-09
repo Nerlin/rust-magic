@@ -2,9 +2,8 @@ use std::collections::HashMap;
 
 use indexmap::IndexSet;
 
+use crate::abilities::Resolve;
 use crate::{
-    abilities::Effect,
-    action::Action,
     card::{Card, Zone},
     mana::Mana,
     turn::Turn,
@@ -110,19 +109,6 @@ impl Default for Game {
             resolve: None,
         }
     }
-}
-
-#[derive(Clone)]
-pub enum Resolve {
-    Spell {
-        effect: Effect,
-        action: Action,
-        card_id: ObjectId,
-    },
-    Ability {
-        effect: Effect,
-        action: Action,
-    },
 }
 
 pub struct Player {

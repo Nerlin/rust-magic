@@ -1,7 +1,9 @@
+use crate::abilities::ResolveKind::{Ability, Spell};
+use crate::card::Zone;
 use crate::{
     action::{Action, Choice},
     card::{draw_card, put_on_battlefield, put_on_graveyard, put_on_stack, CardType},
-    game::{Game, GameStatus, ObjectId, Resolve, Value},
+    game::{Game, GameStatus, ObjectId, Value},
     mana::{Color, Mana},
     turn::{Priority, Step},
 };
@@ -72,8 +74,9 @@ pub enum Cost {
     And(&'static [Cost]),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Effect {
+    #[default]
     None,
     Mana(Mana),
     Damage(u16),
@@ -124,6 +127,72 @@ pub enum Target {
 
     // Defines that any of the specified targets can be selected
     AnyOf(&'static [Target]),
+}
+
+#[derive(Clone, Debug)]
+pub struct Resolve {
+    pub effect: Effect,
+    pub action: Action,
+    pub player_id: ObjectId,
+    pub kind: ResolveKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ResolveKind {
+    Spell(ObjectId),
+    Ability,
+}
+
+// TODO: Change this name
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ResolveChoice {
+    pub choice: Choice,
+    pub player_id: ObjectId,
+    pub effect: Effect,
+}
+
+impl ResolveChoice {
+    pub fn valid_choice(&self, game: &mut Game) -> bool {
+        match &self.effect {
+            Effect::Mana(mana) => !mana.has(&Color::Any) || self.choice.validate_mana(mana),
+            Effect::Discard(card_count) => match &self.choice {
+                Choice::Card(card_id) => {
+                    if *card_count != 1 {
+                        return false;
+                    }
+                    if let Some(card) = game.get_card(*card_id) {
+                        return card.owner_id == self.player_id && card.zone == Zone::Hand;
+                    }
+                    false
+                }
+                Choice::And(choices) => {
+                    choices.len() == *card_count
+                        && choices.iter().all(|choice| {
+                            if let Choice::Card(card_id) = choice {
+                                if let Some(card) = game.get_card(*card_id) {
+                                    return card.owner_id == self.player_id
+                                        && card.zone == Zone::Hand;
+                                }
+                            }
+                            false
+                        })
+                }
+                _ => false,
+            },
+            _ => true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, PartialOrd, Eq, Hash)]
+pub enum ResolveError {
+    EmptyStack,
+
+    InvalidChoice,
+    InvalidTarget,
+
+    UnknownEffect,
+    UnknownActionOwner,
 }
 
 pub fn create_card_action(
@@ -221,10 +290,11 @@ pub fn play_card(game: &mut Game, card_id: ObjectId, action: Action) {
                 Effect::None
             };
 
-            let spell = Resolve::Spell {
-                card_id,
+            let spell = Resolve {
+                kind: Spell(card_id),
                 action,
                 effect,
+                player_id: card.owner_id,
             };
             game.stack.push(spell);
 
@@ -272,6 +342,8 @@ pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, actio
         return false;
     };
 
+    let player_id = card.owner_id;
+
     if !action.valid(game) {
         return false;
     }
@@ -280,15 +352,28 @@ pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, actio
         return false;
     }
 
-    let effect_choice = action.choices.effect.clone();
+    let choice = action.choices.effect.clone();
     let effect = ability.effect.clone();
-    let entry = Resolve::Ability { effect, action };
+    let entry = Resolve {
+        kind: Ability,
+        effect,
+        action,
+        player_id,
+    };
     game.stack.push(entry);
 
     if let Effect::Mana(_) = ability.effect {
         // Mana abilities are resolved without stack.
         start_resolve(game);
-        resolve_choice(game, effect_choice);
+        resolve_choice(
+            game,
+            ResolveChoice {
+                player_id,
+                choice,
+                effect: ability.effect.clone(),
+            },
+        )
+        .unwrap();
         end_resolve(game);
     }
     true
@@ -297,9 +382,7 @@ pub fn play_ability(game: &mut Game, card_id: ObjectId, ability_id: usize, actio
 /// Resolves the current spell or ability that does not require player choices.
 pub fn resolve_auto(game: &mut Game) {
     start_resolve(game);
-
-    // TODO: Return Result<Effect, Err> to verify that the choice is correct.
-    resolve_choice(game, Choice::None);
+    resolve_choice(game, ResolveChoice::default()).unwrap();
     end_resolve(game);
 }
 
@@ -310,35 +393,50 @@ pub fn start_resolve(game: &mut Game) {
     game.resolve = game.stack.pop();
 }
 
-pub fn resolve_choice(game: &mut Game, choice: Choice) -> Effect {
+/// Resolves the current effect with the specified choice and returns the next choice
+/// that the player needs to make to resolve the effect further.
+///
+/// If the choice is incorrect, returns ResolveError.
+pub fn resolve_choice(
+    game: &mut Game,
+    choice: ResolveChoice,
+) -> Result<Option<ResolveChoice>, ResolveError> {
     let mut resolve = game.resolve.clone();
-    let next_effect = match &mut resolve {
-        Some(Resolve::Spell {
-            ref mut effect,
-            action,
-            ..
-        }) => resolve_effect(game, effect, &action, choice),
-        Some(Resolve::Ability {
-            ref mut effect,
-            action,
-        }) => resolve_effect(game, effect, &action, choice),
-        None => Effect::None,
+    let result: Result<Option<ResolveChoice>, ResolveError> = match &mut resolve {
+        Some(ref mut resolve) => {
+            if let Effect::And(ref mut effects) = resolve.effect {
+                if let Some(effect) = effects.pop_front() {
+                    if let Err(err) = resolve_effect(game, &effect, &resolve.action, choice) {
+                        return Err(err);
+                    }
+                }
+                if effects.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(get_next_resolve_choice(resolve))
+                }
+            } else {
+                resolve_effect(game, &resolve.effect, &resolve.action, choice)
+            }
+        }
+
+        None => Err(ResolveError::EmptyStack),
     };
 
     game.resolve = resolve;
-    if let Choice::None = next_effect.get_required_choice() {
-        if next_effect != Effect::None {
+
+    if let Ok(Some(r)) = result.clone() {
+        if r.effect != Effect::None && r.effect.get_required_choice() == Choice::None {
             // Automatically resolve the next effect does not require a player choice
-            return resolve_choice(game, Choice::None);
+            return resolve_choice(game, ResolveChoice::default());
         }
     }
-
-    next_effect
+    result
 }
 
 pub fn end_resolve(game: &mut Game) {
-    let resolve = game.resolve.clone();
-    if let Some(Resolve::Spell { card_id, .. }) = resolve {
+    let resolve = game.resolve.clone().unwrap();
+    if let Spell(card_id) = resolve.kind {
         if let Some(card) = game.get_card(card_id) {
             match &card.kind {
                 CardType::Artifact
@@ -354,15 +452,24 @@ pub fn end_resolve(game: &mut Game) {
     game.turn.priority = Some(Priority::new(game.turn.active_player));
 }
 
-fn resolve_effect(game: &mut Game, effect: &mut Effect, action: &Action, choice: Choice) -> Effect {
+fn resolve_effect(
+    game: &mut Game,
+    effect: &Effect,
+    action: &Action,
+    r: ResolveChoice,
+) -> Result<Option<ResolveChoice>, ResolveError> {
+    if !r.valid_choice(game) {
+        return Err(ResolveError::InvalidChoice);
+    }
+
     if let Some(owner) = game.get_player(action.player_id) {
         match effect {
             Effect::Mana(mana) => {
                 if mana.has(&Color::Any) {
-                    if let Choice::Mana(mana) = choice {
+                    if let Choice::Mana(mana) = r.choice {
                         owner.mana += mana;
                     } else {
-                        panic!("The ability required choosing mana.");
+                        return Err(ResolveError::InvalidChoice);
                     }
                 } else {
                     owner.mana += *mana;
@@ -375,10 +482,16 @@ fn resolve_effect(game: &mut Game, effect: &mut Effect, action: &Action, choice:
                 Choice::Card(card_id) => {
                     deal_damage(game, card_id, *damage);
                 }
-                _ => {}
+                _ => {
+                    return Err(ResolveError::InvalidTarget);
+                }
             },
-            Effect::Discard(_) => match choice {
+            Effect::Discard(count) => match r.choice {
                 Choice::And(choices) => {
+                    if choices.len() != *count {
+                        return Err(ResolveError::InvalidChoice);
+                    }
+
                     for choice in choices.iter() {
                         if let Choice::Card(card_id) = choice {
                             put_on_graveyard(game, *card_id);
@@ -388,7 +501,9 @@ fn resolve_effect(game: &mut Game, effect: &mut Effect, action: &Action, choice:
                 Choice::Card(card_id) => {
                     put_on_graveyard(game, card_id);
                 }
-                _ => {}
+                _ => {
+                    return Err(ResolveError::InvalidChoice);
+                }
             },
             Effect::Draw(count) => match action.required.target {
                 Target::Owner => {
@@ -403,23 +518,54 @@ fn resolve_effect(game: &mut Game, effect: &mut Effect, action: &Action, choice:
                         }
                     }
                 }
-                _ => {}
+                _ => {
+                    return Err(ResolveError::InvalidTarget);
+                }
             },
-            Effect::And(effects) => {
-                if let Some(ref mut effect) = effects.pop_front() {
-                    resolve_effect(game, effect, action, choice);
-                }
-                if effects.is_empty() {
-                    return Effect::None;
-                } else if let Some(effect) = effects.front() {
-                    return effect.clone();
-                }
+            _ => {
+                return Err(ResolveError::UnknownEffect);
             }
-            _ => {}
         };
-        return Effect::None;
+        return Ok(None);
     }
-    Effect::None
+    Err(ResolveError::UnknownActionOwner)
+}
+
+// TODO: Simplify this signature
+pub fn get_next_resolve_choice(resolve: &Resolve) -> Option<ResolveChoice> {
+    let effect = match &resolve.effect {
+        Effect::And(effects) => effects.front().unwrap_or(&Effect::None),
+        effect => effect,
+    };
+
+    match effect {
+        Effect::Mana(mana) => {
+            if mana.has(&Color::Any) {
+                let mut r = ResolveChoice::default();
+                r.effect = effect.clone();
+                r.player_id = resolve.player_id;
+                Some(r)
+            } else {
+                None
+            }
+        }
+        Effect::Discard(_) => {
+            let mut r = ResolveChoice::default();
+            r.effect = effect.clone();
+            r.player_id = match resolve.action.choices.target {
+                Choice::Player(player_id) => player_id,
+                _ => {
+                    if resolve.action.required.target == Target::Owner {
+                        resolve.player_id
+                    } else {
+                        return None;
+                    }
+                }
+            };
+            Some(r)
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn deal_player_damage(game: &mut Game, player_id: ObjectId, damage: u16) {
@@ -471,8 +617,11 @@ mod tests {
     use indexmap::IndexSet;
     use std::collections::VecDeque;
 
-    use crate::abilities::{end_resolve, resolve_choice, start_resolve};
-    use crate::card::put_on_deck_top;
+    use crate::abilities::{
+        end_resolve, get_next_resolve_choice, resolve_choice, start_resolve, ResolveChoice,
+        ResolveError,
+    };
+    use crate::card::{put_on_deck_top, put_on_graveyard};
     use crate::{
         abilities::{
             can_play_card, create_ability_action, create_card_action, play_ability, play_card,
@@ -806,14 +955,29 @@ mod tests {
         play_card(&mut game, card_id, action);
         start_resolve(&mut game);
 
-        let next_effect = resolve_choice(&mut game, Choice::None);
-        assert_eq!(next_effect, Effect::Discard(1));
+        let next_choice = get_next_resolve_choice(&game.resolve.clone().unwrap());
+        assert_eq!(next_choice, None);
+
+        let mut next_choice = resolve_choice(&mut game, ResolveChoice::default())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            next_choice,
+            ResolveChoice {
+                effect: Effect::Discard(1),
+                choice: Choice::None,
+                player_id
+            }
+        );
 
         let card = game.get_card(drawn_card).unwrap();
         assert_eq!(card.zone, Zone::Hand);
 
-        let next_effect = resolve_choice(&mut game, Choice::Card(drawn_card));
-        assert_eq!(next_effect, Effect::None);
+        next_choice.choice = Choice::Card(drawn_card);
+
+        let next_effect = resolve_choice(&mut game, next_choice);
+        assert_eq!(next_effect, Ok(None));
 
         end_resolve(&mut game);
 
@@ -822,6 +986,47 @@ mod tests {
 
         let card = game.get_card(drawn_card).unwrap();
         assert_eq!(card.zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn test_discard_invalid_card() {
+        let (mut game, player_id, opponent_id) = Game::new();
+
+        let mut card = Card::new_sorcery(player_id);
+        card.cost = Cost::Mana("B");
+        card.play_ability = Some(PlayAbility {
+            effect: Effect::Discard(1),
+            target: Target::Player,
+        });
+        let card_id = game.add_card(card.clone());
+        put_in_hand(&mut game, card_id);
+
+        let opponent_card = game.add_card(Card::new_land(opponent_id));
+        put_on_graveyard(&mut game, opponent_card);
+
+        precombat_step(&mut game);
+        add_mana(&mut game, player_id, Mana::from("B"));
+
+        let mut action = create_card_action(&mut game, card_id, player_id).unwrap();
+        action.choices.cost = Choice::Mana(Mana::from("B"));
+        action.choices.target = Choice::Player(opponent_id);
+        play_card(&mut game, card_id, action);
+
+        start_resolve(&mut game);
+
+        let mut next_choice = get_next_resolve_choice(&game.resolve.clone().unwrap()).unwrap();
+        assert_eq!(
+            next_choice,
+            ResolveChoice {
+                player_id: opponent_id,
+                effect: Effect::Discard(1),
+                choice: Choice::None
+            }
+        );
+        next_choice.choice = Choice::Card(opponent_card);
+
+        let result = resolve_choice(&mut game, next_choice);
+        assert_eq!(result, Err(ResolveError::InvalidChoice));
     }
 
     #[test]
